@@ -1,78 +1,604 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-{{ template "head" . }}
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenLinkHub</title>
+<style>
+:root {
+  --bg: #0f1013; --panel: #17191e; --panel-2: #1e2128; --line: #2a2e37;
+  --text: #e9eaee; --muted: #9097a5; --accent: #ffc400; --accent-ink: #1a1400;
+  --ok: #3ccf8e; --warn: #ffb020; --bad: #ff5d5d; --fan: #4ea8ff; --pump: #ff7a45;
+  --radius: 10px; color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f4f5f7; --panel: #ffffff; --panel-2: #f0f1f4; --line: #dfe2e8;
+    --text: #15171c; --muted: #5d6573; --accent: #e0a800; --accent-ink: #1a1400; color-scheme: light; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.bar { max-width: 1180px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; margin-right: auto; }
+.brand svg { width: 26px; height: 26px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.chip b { color: var(--text); font-weight: 600; }
+nav { max-width: 1180px; margin: 0 auto; padding: 0 16px; display: flex; gap: 4px; overflow-x: auto; }
+nav button { background: none; border: 0; color: var(--muted); padding: 9px 12px; border-bottom: 2px solid transparent; cursor: pointer; font: inherit; }
+nav button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+main { max-width: 1180px; margin: 0 auto; padding: 18px 16px 60px; }
+.banner { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--panel); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; }
+.banner.bad { border-left-color: var(--bad); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 18px; }
+.card-head { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.card-head h2 { font-size: 15px; margin: 0; margin-right: auto; }
+.card-head .sub { color: var(--muted); font-weight: 400; font-size: 12.5px; margin-left: 6px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+label.inline { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12.5px; }
+select, input[type=text], input[type=number], input[type=url] { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; font: inherit; min-width: 0; }
+select:focus, input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 0; }
+input[type=range] { accent-color: var(--accent); width: 120px; }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+input[type=color] { width: 34px; height: 26px; border: 1px solid var(--line); border-radius: 6px; background: none; padding: 1px; cursor: pointer; }
+button.btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; font: inherit; cursor: pointer; }
+button.btn:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--bad); }
+.devices { display: grid; }
+.dev { display: grid; grid-template-columns: minmax(170px, 1.3fr) minmax(190px, 1.2fr) minmax(150px, 1fr) minmax(150px, 1fr) auto; gap: 10px 14px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
+.dev:first-child { border-top: 0; }
+.dev .name { font-weight: 600; }
+.dev .label { color: var(--muted); font-size: 12.5px; cursor: text; border-bottom: 1px dashed transparent; }
+.dev .label:hover { border-bottom-color: var(--muted); }
+.stats { display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+.stat small { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.duty { height: 4px; background: var(--panel-2); border-radius: 2px; margin-top: 4px; overflow: hidden; width: 70px; }
+.duty i { display: block; height: 100%; background: var(--fan); transition: width .4s; }
+.dev select { width: 100%; }
+.swatch { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--line); cursor: pointer; background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
+.swatch.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.override { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; background: var(--panel-2); border-radius: 8px; padding: 8px 12px; }
+.empty { color: var(--muted); padding: 30px 14px; text-align: center; }
+.split { display: grid; grid-template-columns: 240px 1fr; gap: 18px; }
+.list { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; align-self: start; }
+.list button { display: flex; width: 100%; justify-content: space-between; gap: 8px; text-align: left; background: none; border: 0; color: var(--text); padding: 7px 9px; border-radius: 6px; cursor: pointer; font: inherit; }
+.list button[aria-current="true"] { background: var(--panel-2); }
+.badge { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
+.editor { padding: 14px; }
+.form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 16px; margin-bottom: 14px; }
+.form label { display: grid; gap: 4px; color: var(--muted); font-size: 12.5px; }
+.chart { width: 100%; height: auto; display: block; background: var(--panel-2); border-radius: 8px; touch-action: none; user-select: none; }
+.chart text { fill: var(--muted); font-size: 11px; }
+.chart .grid { stroke: var(--line); }
+.chart circle { cursor: grab; }
+.legend { display: flex; gap: 16px; align-items: center; color: var(--muted); font-size: 12.5px; margin: 8px 0 12px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 12.5px; }
+pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-height: 360px; overflow: auto; font: 12px/1.5 Consolas, ui-monospace, monospace; white-space: pre-wrap; margin: 0; }
+.settings { display: grid; gap: 12px; padding: 14px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.35); opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.toast.err { border-color: var(--bad); }
+[hidden] { display: none !important; }
+@media (max-width: 860px) {
+  .dev { grid-template-columns: 1fr 1fr; }
+  .dev > :first-child { grid-column: 1 / -1; }
+  .split { grid-template-columns: 1fr; }
+}
+</style>
+</head>
 <body>
-
-<div class="container-fluid">
-    {{ $root := . }}
-    {{ $deviceList := $root.Devices }}
-    {{ $battery := .BatteryStats }}
-    {{ $dash := .Dashboard }}
-    <div class="row">
-        <!-- Sidebar -->
-        {{ template "sidebar" . }}
-
-        <!-- Main -->
-        <main class="main-content p-4">
-            <!-- Temperature bar -->
-            {{ if .Dashboard.TemperatureBar }}
-            {{ template "temperature-bar" . }}
-            {{ end }}
-
-            <!-- Dashboard -->
-            <div class="row align-items-start">
-                <!-- Device placeholder -->
-                <div id="system-cards" class="device-placeholder"></div>
-
-                <!-- Add new device -->
-                <div id="system-cards-add" class="col-md-2">
-                    <div class="card system-card text-center">
-                        <div class="card-body">
-                            <div class="add-device-widget">
-                                <div class="add-device-icon">
-                                    <i class="bi bi-plus-lg"></i>
-                                </div>
-                                <div class="add-device-title">
-                                    {{ $root.Lang "txtAddDeviceToDashboard" }}
-                                </div>
-                                <label class="add-device-select">
-                                    <select class="system-select" id="dashboardDeviceSelect">
-                                        <option selected disabled>{{ $root.Lang "txtSelectDevice" }}</option>
-                                        {{ range .Devices }}
-                                        {{ if eq .Hidden true }}
-                                        {{ continue }}
-                                        {{ end }}
-
-                                        {{ if .GetDevice }}
-                                        <option value="{{ .Serial }}">{{ .Product }}</option>
-                                        {{ end }}
-                                        {{ end }}
-                                    </select>
-                                </label>
-                                <label class="full-width">
-                                    <div class="settings-list">
-                                        <div class="settings-row">
-                                            <button class="system-button btn-accent add-device-btn addDeviceToDashboard" id="addDeviceToDashboard">
-                                                {{ $root.Lang "txtSave" }}
-                                            </button>
-                                            <button class="system-button danger add-device-btn deleteDeviceFromDashboard" id="deleteDeviceFromDashboard">
-                                                {{ $root.Lang "txtDelete" }}
-                                            </button>
-                                        </div>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </main>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#ffc400"/><circle cx="16" cy="16" r="12" fill="#18181c"/><g fill="#fafafa"><path d="M16 16 C 14 9, 18 6, 21 7 C 20 11, 18 14, 16 16Z"/><path d="M16 16 C 23 15, 26 19, 24.5 22 C 21 20.5, 18 18, 16 16Z"/><path d="M16 16 C 17 23, 13 26, 10 24.5 C 11.5 21, 14 18, 16 16Z"/><path d="M16 16 C 9 17, 6 13, 7.5 10 C 11 11.5, 14 14, 16 16Z"/></g><circle cx="16" cy="16" r="3" fill="#ffc400"/></svg>
+      OpenLinkHub
     </div>
-</div>
-<script src="/static/js/sidebar.js"></script>
-<script src="/static/js/index.js"></script>
-{{ if .Dashboard.TemperatureBar }}
-<script src="/static/js/temperature-bar.js"></script>
-{{ end }}
+    <div class="chips" id="chips"></div>
+  </div>
+  <nav role="tablist">
+    <button role="tab" data-tab="devices" aria-selected="true">Devices</button>
+    <button role="tab" data-tab="curves">Fan curves</button>
+    <button role="tab" data-tab="lighting">Lighting</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-devices">
+    <div id="banners"></div>
+    <div id="hubs"></div>
+  </section>
+
+  <section id="tab-curves" hidden>
+    <div class="split">
+      <div class="list" id="curve-list"></div>
+      <div class="card editor" id="curve-editor"></div>
+    </div>
+  </section>
+
+  <section id="tab-lighting" hidden>
+    <div class="split">
+      <div class="list" id="rgb-list"></div>
+      <div class="card editor" id="rgb-editor"></div>
+    </div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="card"><div class="card-head"><h2>Settings</h2></div><div class="settings" id="settings"></div></div>
+    <div class="card"><div class="card-head"><h2>Log</h2><button class="btn" id="refresh-logs">Refresh</button></div><div class="settings"><pre class="logs" id="logs"></pre></div></div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+const SENSORS = { 0: "CPU", 1: "GPU", 2: "Liquid (AIO coolant)", 4: "Temperature probe", 5: "CPU + GPU (max)", 10: "PSU", 12: "LibreHardwareMonitor sensor" };
+const RGB_NAMES = { arc: "Arc", circle: "Circle", circleshift: "Circle Shift", colorpulse: "Color Pulse", colorshift: "Color Shift", colorwarp: "Color Warp",
+  "cpu-temperature": "CPU Temperature", flickering: "Flickering", "gpu-temperature": "GPU Temperature", gradient: "Gradient", "liquid-temperature": "Liquid Temperature",
+  marquee: "Marquee", nebula: "Nebula", off: "Off", "probe-temperature": "Probe Temperature", rain: "Rain", rainbow: "Rainbow", pastelrainbow: "Pastel Rainbow",
+  rotarystack: "Rotary Stack", rotator: "Rotator", sequential: "Sequential", spinner: "Spinner", spiralrainbow: "Spiral Rainbow",
+  pastelspiralrainbow: "Pastel Spiral Rainbow", static: "Static", storm: "Storm", watercolor: "Watercolor", wave: "Wave" };
+const TEMP_MODES = ["cpu-temperature", "gpu-temperature", "liquid-temperature", "probe-temperature"];
+
+let state = null;
+let structure = "";
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, "");
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) e.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return e;
+};
+const shortSerial = s => "••••" + String(s).slice(-4);
+const fmtTemp = t => t > 0 ? t.toFixed(1) + " °C" : "—";
+
+function toast(msg, err = false) {
+  const t = $("#toast");
+  t.textContent = msg; t.className = "toast show" + (err ? " err" : "");
+  clearTimeout(t._h); t._h = setTimeout(() => t.className = "toast", err ? 4000 : 1600);
+}
+
+async function api(path, body) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-OpenLinkHub": "1" }, body: JSON.stringify(body || {}) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || r.statusText);
+    return true;
+  } catch (e) { toast(e.message, true); return false; }
+}
+
+// ---------------------------------------------------------------- tabs
+for (const b of document.querySelectorAll("nav button")) {
+  b.addEventListener("click", () => {
+    for (const o of document.querySelectorAll("nav button")) o.setAttribute("aria-selected", o === b);
+    for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "tab-" + b.dataset.tab;
+    if (b.dataset.tab === "settings") loadLogs();
+    history.replaceState(null, "", "#" + b.dataset.tab);
+    try { localStorage.setItem("tab", b.dataset.tab); } catch {}
+  });
+}
+{
+  let t = location.hash.slice(1);
+  if (!t) try { t = localStorage.getItem("tab"); } catch {}
+  if (t) $(`nav button[data-tab="${CSS.escape(t)}"]`)?.click();
+}
+
+// ---------------------------------------------------------------- polling
+async function poll() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    state = await r.json();
+    render();
+  } catch {
+    $("#chips").replaceChildren(el("span", { class: "chip" }, "OpenLinkHub is not running"));
+  }
+  setTimeout(poll, 1000);
+}
+
+function render() {
+  renderChips();
+  renderBanners();
+  const sig = JSON.stringify([state.hubs.map(h => [h.serial, h.devices.map(d => [d.channelId, d.name, d.ledChannels])]),
+    Object.keys(state.speedProfiles), state.rgbModes]);
+  if (sig !== structure) { structure = sig; buildHubs(); renderCurveList(); renderRgbList(); renderSettings(); }
+  updateHubs();
+  updateCurveMarker();
+}
+
+function renderChips() {
+  const s = state.sensors;
+  const chips = [
+    el("span", { class: "chip", title: s.lhmAvailable ? "From LibreHardwareMonitor" : "Start LibreHardwareMonitor to read CPU temperature" }, "CPU ", el("b", {}, fmtTemp(s.cpu))),
+    el("span", { class: "chip" }, "GPU ", el("b", {}, fmtTemp(s.gpu))),
+  ];
+  for (const h of state.hubs) {
+    const aio = h.devices.find(d => d.aio);
+    if (aio) chips.push(el("span", { class: "chip" }, "Coolant ", el("b", {}, fmtTemp(aio.temperature))));
+  }
+  $("#chips").replaceChildren(...chips);
+}
+
+function renderBanners() {
+  const out = [];
+  if (!state.hubs.length) {
+    out.push(el("div", { class: "banner bad" }, el("b", {}, "No iCUE LINK System Hub found. "),
+      "Check the hub's USB cable, and make sure iCUE (and other RGB software like SignalRGB) is closed. Hubs are detected automatically within a few seconds."));
+  }
+  const usesCpu = state.hubs.some(h => h.devices.some(d => [0, 5].includes(state.speedProfiles[d.speedProfile]?.sensor)));
+  if (!state.sensors.lhmAvailable && usesCpu) {
+    out.push(el("div", { class: "banner" }, el("b", {}, "CPU temperature unavailable. "),
+      "Fans on CPU-based curves are running as if the CPU were at 50 °C. Run LibreHardwareMonitor as administrator with Options → Remote Web Server enabled (see the README), ",
+      "or switch fans to the “Liquid Temperature” curve."));
+  }
+  if (state.hubs.some(h => h.critical)) out.push(el("div", { class: "banner bad" }, el("b", {}, "AIO coolant is critically hot. "), "All fans and the pump are at 100% until it cools below 52 °C."));
+  $("#banners").replaceChildren(...out);
+}
+
+// ---------------------------------------------------------------- devices
+function speedOptions(selected) {
+  return Object.keys(state.speedProfiles).map(n => el("option", { value: n, selected: n === selected }, n));
+}
+function rgbOptions(selected) {
+  return state.rgbModes.map(m => el("option", { value: m, selected: m === selected }, RGB_NAMES[m] || m));
+}
+
+function buildHubs() {
+  const root = $("#hubs");
+  root.replaceChildren();
+  for (const h of state.hubs) {
+    const speedAll = el("select", { "aria-label": "Fan curve for all devices", onchange: async e => {
+      const chans = h.devices.filter(d => d.hasSpeed || d.containsPump).filter(d => !d.isPsu && !d.aio).map(d => d.channelId);
+      if (e.target.value && await api("/api/hub/speed", { serial: h.serial, channels: chans, profile: e.target.value })) toast("Fan curve applied to all fans");
+      e.target.value = "";
+    } }, el("option", { value: "" }, "All fans…"), speedOptions(""));
+    const rgbAll = el("select", { "aria-label": "Lighting for all devices", onchange: async e => {
+      const chans = h.devices.filter(d => d.ledChannels > 0).map(d => d.channelId);
+      if (e.target.value && await api("/api/hub/rgb", { serial: h.serial, channels: chans, profile: e.target.value })) toast("Lighting applied to all devices");
+      e.target.value = "";
+    } }, el("option", { value: "" }, "All lighting…"), rgbOptions(""));
+    const bright = el("input", { type: "range", min: 0, max: 100, step: 5, value: h.brightness, "data-k": "brightness", "aria-label": "Brightness",
+      onchange: e => api("/api/hub/brightness", { serial: h.serial, value: +e.target.value }) });
+    const off = el("input", { type: "checkbox", "data-k": "rgbOff", onchange: e => api("/api/hub/rgbOff", { serial: h.serial, off: e.target.checked }) });
+    off.checked = h.rgbOff;
+
+    const devs = el("div", { class: "devices" });
+    for (const d of h.devices) devs.append(buildDevice(h, d));
+
+    root.append(el("div", { class: "card", "data-serial": h.serial },
+      el("div", { class: "card-head" },
+        el("h2", {}, h.product, el("span", { class: "sub" }, `${shortSerial(h.serial)} · firmware ${h.firmware}`)),
+        el("div", { class: "controls" },
+          el("label", { class: "inline" }, "Brightness", bright, el("span", { "data-k": "brightnessText" })),
+          el("label", { class: "inline" }, off, "Lights off"),
+          speedAll, rgbAll)),
+      h.brightnessCap ? el("div", { class: "banner", style: "margin:10px 14px" }, `Brightness is capped at ${Math.round(h.brightnessCap * 100)}% to protect the hub port (too many LEDs on one port).`) : null,
+      devs));
+  }
+}
+
+function buildDevice(h, d) {
+  const canSpeed = (d.hasSpeed || d.containsPump) && !d.isPsu;
+  const labelEl = el("div", { class: "label", title: "Click to rename", tabindex: 0 }, d.label || "Add label");
+  const editLabel = () => {
+    const inp = el("input", { type: "text", value: d.label || "", maxlength: 32, placeholder: "e.g. Top exhaust" });
+    const done = async save => {
+      if (save) { await api("/api/hub/label", { serial: h.serial, channel: d.channelId, label: inp.value }); d.label = inp.value.trim(); }
+      labelEl.textContent = d.label || "Add label"; inp.replaceWith(labelEl);
+    };
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") done(true); if (e.key === "Escape") done(false); });
+    inp.addEventListener("blur", () => done(true));
+    labelEl.replaceWith(inp); inp.focus();
+  };
+  labelEl.addEventListener("click", editLabel);
+  labelEl.addEventListener("keydown", e => { if (e.key === "Enter") editLabel(); });
+
+  const speedSel = canSpeed
+    ? el("select", { "data-k": "speed", "aria-label": "Fan curve", onchange: e => api("/api/hub/speed", { serial: h.serial, channels: [d.channelId], profile: e.target.value }) }, speedOptions(d.speedProfile))
+    : el("span", { class: "hint" }, d.isPsu ? "PSU curve" : "—");
+  const rgbSel = d.ledChannels > 0
+    ? el("select", { "data-k": "rgb", "aria-label": "Lighting effect", onchange: e => api("/api/hub/rgb", { serial: h.serial, channels: [d.channelId], profile: e.target.value }) }, rgbOptions(d.rgbProfile))
+    : el("span", { class: "hint" }, "No lighting");
+
+  const row = el("div", { class: "dev", "data-ch": d.channelId });
+  const ov = buildOverride(h, d);
+  const swatch = d.ledChannels > 0 ? el("button", { class: "swatch" + (d.rgbOverride.enabled ? " on" : ""), title: "Custom colors for this device", "aria-label": "Custom colors", onclick: () => ov.hidden = !ov.hidden }) : el("span");
+  row.append(
+    el("div", {}, el("div", { class: "name" }, d.name), labelEl),
+    el("div", { class: "stats" },
+      el("div", { class: "stat" }, el("small", {}, d.isPsu ? "Fan" : "Speed"), el("span", { "data-k": "rpm" }), el("div", { class: "duty" }, el("i", { "data-k": "duty" }))),
+      el("div", { class: "stat" }, el("small", {}, d.aio ? "Coolant" : "Temp"), el("span", { "data-k": "temp" })),
+      d.isPsu ? el("div", { class: "stat" }, el("small", {}, "Power"), el("span", { "data-k": "power" })) : null),
+    speedSel, rgbSel, swatch, ov);
+  return row;
+}
+
+function hexOf(c) { return "#" + [c.red, c.green, c.blue].map(v => Math.max(0, Math.min(255, Math.round(v || 0))).toString(16).padStart(2, "0")).join(""); }
+function colorOf(hex, base = {}) { const n = parseInt(hex.slice(1), 16); return { ...base, red: n >> 16 & 255, green: n >> 8 & 255, blue: n & 255, brightness: 1 }; }
+
+function buildOverride(h, d) {
+  const o = structuredClone(d.rgbOverride);
+  if (!o.start || (!o.start.red && !o.start.green && !o.start.blue)) o.start = { red: 0, green: 255, blue: 255, brightness: 1 };
+  if (!o.end || (!o.end.red && !o.end.green && !o.end.blue)) o.end = { red: 255, green: 0, blue: 255, brightness: 1 };
+  if (!o.middle) o.middle = { red: 255, green: 255, blue: 255, brightness: 1 };
+  if (!o.speed) o.speed = 4;
+  const save = () => api("/api/hub/override", { serial: h.serial, channel: d.channelId, override: o }).then(ok => ok && toast(o.enabled ? "Custom colors on" : "Custom colors off"));
+  const en = el("input", { type: "checkbox", onchange: e => { o.enabled = e.target.checked; save(); } }); en.checked = !!o.enabled;
+  const picker = key => el("input", { type: "color", value: hexOf(o[key]), onchange: e => { o[key] = colorOf(e.target.value); if (o.enabled) save(); } });
+  return el("div", { class: "override", hidden: true },
+    el("label", { class: "inline" }, en, "Use custom colors"),
+    el("label", { class: "inline" }, "Start", picker("start")),
+    el("label", { class: "inline" }, "Middle", picker("middle")),
+    el("label", { class: "inline" }, "End", picker("end")),
+    el("label", { class: "inline" }, "Speed", el("input", { type: "range", min: 0.1, max: 10, step: 0.1, value: o.speed, onchange: e => { o.speed = +e.target.value; if (o.enabled) save(); } })),
+    el("span", { class: "hint" }, "Static uses the start color. Animated effects blend start → end."));
+}
+
+function updateHubs() {
+  for (const h of state.hubs) {
+    const card = $(`.card[data-serial="${CSS.escape(h.serial)}"]`);
+    if (!card) continue;
+    const bright = $('[data-k="brightness"]', card);
+    if (document.activeElement !== bright) bright.value = h.brightness;
+    $('[data-k="brightnessText"]', card).textContent = h.brightness + "%";
+    const off = $('[data-k="rgbOff"]', card); if (document.activeElement !== off) off.checked = h.rgbOff;
+    for (const d of h.devices) {
+      const row = $(`.dev[data-ch="${d.channelId}"]`, card);
+      if (!row) continue;
+      $('[data-k="rpm"]', row).textContent = d.hasSpeed || d.containsPump || d.isPsu ? `${d.rpm} rpm` : "—";
+      $('[data-k="duty"]', row).style.width = (d.hasSpeed || d.containsPump ? d.duty : 0) + "%";
+      $('[data-k="duty"]', row).parentElement.title = `${d.duty}% duty`;
+      $('[data-k="temp"]', row).textContent = d.hasTemps ? fmtTemp(d.temperature) : "—";
+      const p = $('[data-k="power"]', row); if (p) p.textContent = d.powerOut ? d.powerOut.toFixed(0) + " W" : "—";
+      const sp = $('[data-k="speed"]', row); if (sp && document.activeElement !== sp) sp.value = d.speedProfile;
+      const rg = $('[data-k="rgb"]', row); if (rg && document.activeElement !== rg) rg.value = d.rgbProfile;
+      $(".swatch", row)?.classList.toggle("on", !!d.rgbOverride.enabled);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- fan curves
+let curveName = "Normal";
+let curveDraft = null;
+let activeCurve = 1;
+
+function renderCurveList() {
+  const list = $("#curve-list");
+  list.replaceChildren(...Object.entries(state.speedProfiles).map(([name, p]) =>
+    el("button", { "aria-current": name === curveName, onclick: () => { curveName = name; curveDraft = null; renderCurveList(); } },
+      el("span", {}, name), el("span", { class: "badge" }, p.builtin ? "built-in" : SENSORS[p.sensor]?.split(" ")[0] || "")) ),
+    el("div", { style: "padding:6px" }, el("button", { class: "btn", style: "width:100%", onclick: () => newCurve() }, "+ New curve")));
+  renderCurveEditor();
+}
+
+function newCurve() {
+  let n = 1; while (state.speedProfiles["Custom " + n]) n++;
+  curveName = null;
+  curveDraft = { name: "Custom " + n, sensor: 2, zeroRpm: false, channelId: 0, device: "", sensorId: "",
+    points: { 0: [{ x: 25, y: 50 }, { x: 35, y: 70 }, { x: 45, y: 100 }], 1: [{ x: 25, y: 30 }, { x: 35, y: 50 }, { x: 45, y: 100 }] } };
+  renderCurveList();
+}
+
+function draft() {
+  if (!curveDraft) {
+    const p = state.speedProfiles[curveName];
+    if (!p) { curveName = "Normal"; return draft(); }
+    curveDraft = { name: curveName, ...structuredClone(p) };
+  }
+  return curveDraft;
+}
+
+function currentSensorTemp(p) {
+  const s = state.sensors;
+  switch (p.sensor) {
+    case 0: return s.cpu; case 1: return s.gpu || s.cpu; case 5: return Math.max(s.cpu, s.gpu);
+    case 2: { for (const h of state.hubs) { const a = h.devices.find(d => d.aio || d.containsPump); if (a) return a.temperature; } return 0; }
+    case 10: { for (const h of state.hubs) { const a = h.devices.find(d => d.isPsu); if (a) return a.temperature; } return 0; }
+    case 4: { const h = state.hubs.find(h => h.serial === p.device) || state.hubs[0]; return h?.devices.find(d => d.channelId === p.channelId)?.temperature || 0; }
+    case 12: return s.sensors.find(x => x.id === p.sensorId)?.value || 0;
+  }
+  return 0;
+}
+
+function renderCurveEditor() {
+  const p = draft();
+  const builtin = !!(curveName && state.speedProfiles[curveName]?.builtin);
+  const root = $("#curve-editor");
+  const sensorSel = el("select", { disabled: builtin, onchange: e => { p.sensor = +e.target.value; renderCurveEditor(); } },
+    Object.entries(SENSORS).map(([v, n]) => el("option", { value: v, selected: +v === p.sensor }, n)));
+  const extra = [];
+  if (p.sensor === 4) {
+    const probes = state.hubs.flatMap(h => h.devices.filter(d => d.isProbe).map(d => ({ h, d })));
+    extra.push(el("label", {}, "Probe", el("select", { disabled: builtin, onchange: e => { const [s, c] = e.target.value.split("|"); p.device = s; p.channelId = +c; } },
+      probes.length ? probes.map(({ h, d }) => el("option", { value: `${h.serial}|${d.channelId}`, selected: p.device === h.serial && p.channelId === d.channelId }, `${d.label || d.name} (${shortSerial(h.serial)})`))
+        : el("option", {}, "No probes found"))));
+    if (probes.length && !p.device) { p.device = probes[0].h.serial; p.channelId = probes[0].d.channelId; }
+  }
+  if (p.sensor === 12) {
+    const list = state.sensors.sensors;
+    extra.push(el("label", {}, "Sensor", el("select", { disabled: builtin, onchange: e => p.sensorId = e.target.value },
+      list.length ? list.map(s => el("option", { value: s.id, selected: s.id === p.sensorId }, `${s.hardware.split("|")[1]} · ${s.name}`)) : el("option", {}, "LibreHardwareMonitor not running"))));
+    if (list.length && !p.sensorId) p.sensorId = list[0].id;
+  }
+  const zero = el("input", { type: "checkbox", disabled: builtin, onchange: e => p.zeroRpm = e.target.checked }); zero.checked = !!p.zeroRpm;
+  const nameInp = el("input", { type: "text", value: builtin ? curveName + " (copy)" : p.name, maxlength: 64 });
+
+  const curveTabs = el("div", { class: "legend" },
+    el("label", { class: "inline" }, el("input", { type: "radio", name: "curve", checked: activeCurve === 1, onchange: () => { activeCurve = 1; drawChart(); } }), el("i", { style: "background:var(--fan)" }), "Fans"),
+    el("label", { class: "inline" }, el("input", { type: "radio", name: "curve", checked: activeCurve === 0, onchange: () => { activeCurve = 0; drawChart(); } }), el("i", { style: "background:var(--pump)" }), "Pump"),
+    el("span", { class: "hint", id: "curve-now" }),
+    el("span", { class: "hint" }, builtin ? "Built-in curves are read-only — save a copy to edit." : "Drag points · click empty space to add · double-click a point to remove"));
+
+  const save = async () => {
+    const name = nameInp.value.trim();
+    const body = { sensor: p.sensor, zeroRpm: !!p.zeroRpm, points: p.points, channelId: p.channelId || 0, device: p.device || "", sensorId: p.sensorId || "" };
+    if (await api("/api/speedProfile", { name, profile: body })) { toast("Curve saved"); curveName = name; curveDraft = null; structure = ""; }
+  };
+  const del = async () => {
+    if (!confirm(`Delete curve “${curveName}”?`)) return;
+    if (await api("/api/speedProfile/delete", { name: curveName })) { toast("Curve deleted"); curveName = "Normal"; curveDraft = null; structure = ""; }
+  };
+
+  root.replaceChildren(
+    el("div", { class: "form" },
+      el("label", {}, "Name", nameInp),
+      el("label", {}, "Follows sensor", sensorSel),
+      ...extra,
+      el("label", {}, "Allow fans to stop", el("span", { class: "row" }, zero, el("span", { class: "hint" }, "Zero RPM below the first point")))),
+    curveTabs,
+    el("div", { id: "chart-wrap" }),
+    el("div", { class: "actions", style: "margin-top:12px" },
+      el("button", { class: "btn primary", onclick: save }, builtin ? "Save as new curve" : "Save"),
+      !builtin && curveName ? el("button", { class: "btn danger", onclick: del }, "Delete") : null,
+      el("span", { class: "hint" }, "Pump duty never drops below 50% on AIOs (31% on TITAN) and fans never below 20% unless zero RPM is on — the same safety floors as upstream.")));
+  drawChart();
+}
+
+const CH = { w: 720, h: 320, l: 44, r: 14, t: 14, b: 34, tMax: 100 };
+const sx = t => CH.l + t / CH.tMax * (CH.w - CH.l - CH.r);
+const sy = d => CH.t + (1 - d / 100) * (CH.h - CH.t - CH.b);
+
+function drawChart() {
+  const wrap = $("#chart-wrap"); if (!wrap) return;
+  const p = draft();
+  const builtin = !!(curveName && state.speedProfiles[curveName]?.builtin);
+  const NS = "http://www.w3.org/2000/svg";
+  const s = (tag, a = {}) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(a)) e.setAttribute(k, v); return e; };
+  const svg = s("svg", { viewBox: `0 0 ${CH.w} ${CH.h}`, class: "chart", role: "img", "aria-label": "Fan curve" });
+  for (let t = 0; t <= CH.tMax; t += 10) {
+    svg.append(s("line", { x1: sx(t), x2: sx(t), y1: CH.t, y2: CH.h - CH.b, class: "grid" }));
+    const tx = s("text", { x: sx(t), y: CH.h - 12, "text-anchor": "middle" }); tx.textContent = t + "°"; svg.append(tx);
+  }
+  for (let d = 0; d <= 100; d += 20) {
+    svg.append(s("line", { x1: CH.l, x2: CH.w - CH.r, y1: sy(d), y2: sy(d), class: "grid" }));
+    const tx = s("text", { x: CH.l - 8, y: sy(d) + 4, "text-anchor": "end" }); tx.textContent = d + "%"; svg.append(tx);
+  }
+  const marker = s("line", { id: "curve-marker", y1: CH.t, y2: CH.h - CH.b, stroke: "var(--accent)", "stroke-dasharray": "4 4", "stroke-width": 1.5 });
+  svg.append(marker);
+
+  for (const which of [0, 1]) {
+    const pts = (p.points[which] || []).slice().sort((a, b) => a.x - b.x);
+    const color = which === 1 ? "var(--fan)" : "var(--pump)";
+    const active = which === activeCurve;
+    const ext = [{ x: 0, y: pts[0]?.y ?? 0 }, ...pts, { x: CH.tMax, y: pts[pts.length - 1]?.y ?? 0 }];
+    svg.append(s("polyline", { points: ext.map(q => `${sx(Math.min(q.x, CH.tMax))},${sy(q.y)}`).join(" "), fill: "none", stroke: color, "stroke-width": active ? 2.5 : 1.5, opacity: active ? 1 : .45 }));
+    if (!active) continue;
+    pts.forEach(pt => {
+      const c = s("circle", { cx: sx(Math.min(pt.x, CH.tMax)), cy: sy(pt.y), r: 7, fill: color, stroke: "var(--panel)", "stroke-width": 2 });
+      const tip = s("title"); tip.textContent = `${pt.x.toFixed(0)} °C → ${pt.y.toFixed(0)}%`; c.append(tip);
+      if (!builtin) {
+        c.addEventListener("pointerdown", ev => {
+          ev.preventDefault(); c.setPointerCapture(ev.pointerId);
+          const move = e => {
+            const r = svg.getBoundingClientRect(), k = CH.w / r.width;
+            pt.x = Math.round(Math.max(0, Math.min(CH.tMax, ((e.clientX - r.left) * k - CH.l) / (CH.w - CH.l - CH.r) * CH.tMax)));
+            pt.y = Math.round(Math.max(0, Math.min(100, (1 - ((e.clientY - r.top) * k - CH.t) / (CH.h - CH.t - CH.b)) * 100)));
+            p.points[which] = pts; drawChart();
+          };
+          c.addEventListener("pointermove", move);
+          c.addEventListener("pointerup", () => c.removeEventListener("pointermove", move), { once: true });
+        });
+        c.addEventListener("dblclick", ev => { ev.stopPropagation(); if (pts.length > 1) { pts.splice(pts.indexOf(pt), 1); p.points[which] = pts; drawChart(); } });
+      }
+      svg.append(c);
+    });
+  }
+  if (!builtin) svg.addEventListener("click", ev => {
+    if (ev.target.tagName === "circle") return;
+    const r = svg.getBoundingClientRect(), k = CH.w / r.width;
+    const x = Math.round(((ev.clientX - r.left) * k - CH.l) / (CH.w - CH.l - CH.r) * CH.tMax);
+    const y = Math.round((1 - ((ev.clientY - r.top) * k - CH.t) / (CH.h - CH.t - CH.b)) * 100);
+    if (x < 0 || x > CH.tMax || y < 0 || y > 100) return;
+    (p.points[activeCurve] ||= []).push({ x, y }); drawChart();
+  });
+  wrap.replaceChildren(svg);
+  updateCurveMarker();
+}
+
+function updateCurveMarker() {
+  const m = $("#curve-marker"); if (!m || !curveDraft && !curveName) return;
+  const t = currentSensorTemp(draft());
+  m.setAttribute("x1", sx(Math.min(t, CH.tMax))); m.setAttribute("x2", sx(Math.min(t, CH.tMax)));
+  m.style.display = t > 0 ? "" : "none";
+  const now = $("#curve-now"); if (now) now.textContent = t > 0 ? `Now: ${t.toFixed(1)} °C` : "Sensor not available";
+}
+
+// ---------------------------------------------------------------- lighting
+let rgbName = "static";
+function renderRgbList() {
+  $("#rgb-list").replaceChildren(...state.rgbModes.filter(m => m !== "off").map(m =>
+    el("button", { "aria-current": m === rgbName, onclick: () => { rgbName = m; renderRgbList(); } }, el("span", {}, RGB_NAMES[m] || m))));
+  renderRgbEditor();
+}
+
+function renderRgbEditor() {
+  const p = structuredClone(state.rgbProfiles[rgbName] || {});
+  for (const k of ["start", "middle", "end"]) p[k] ||= { red: 0, green: 0, blue: 0, brightness: 1 };
+  const picker = k => el("input", { type: "color", value: hexOf(p[k]), onchange: e => p[k] = colorOf(e.target.value, p[k]) });
+  const isTemp = TEMP_MODES.includes(rgbName);
+  const isStatic = rgbName === "static";
+  const hasColors = !["rainbow", "pastelrainbow", "spiralrainbow", "pastelspiralrainbow", "gradient"].includes(rgbName);
+  const speed = el("input", { type: "range", min: 0.1, max: 10, step: 0.1, value: p.speed || 4, oninput: e => { p.speed = +e.target.value; speedTxt.textContent = p.speed + " s"; } });
+  const speedTxt = el("span", { class: "hint" }, (p.speed || 4) + " s");
+  const num = (k, label) => el("label", {}, label, el("input", { type: "number", min: 0, max: 120, value: p[k] ?? 0, onchange: e => p[k] = +e.target.value }));
+  const save = async () => { if (await api("/api/rgbProfile", { name: rgbName, profile: p })) { toast("Effect saved"); } };
+  const colorNote = "Leaving the start or end color black makes non-temperature effects use random colors.";
+  $("#rgb-editor").replaceChildren(
+    el("h2", { style: "margin:0 0 4px;font-size:16px" }, RGB_NAMES[rgbName] || rgbName),
+    el("p", { class: "hint", style: "margin:0 0 14px" }, "Settings here apply to every device using this effect. For per-device colors, use the color swatch on the Devices tab."),
+    el("div", { class: "form" },
+      isTemp || isStatic ? null : el("label", {}, "Cycle time", el("span", { class: "row" }, speed, speedTxt)),
+      hasColors ? el("label", {}, isTemp ? "Cold color" : isStatic ? "Color" : "Start color", picker("start")) : null,
+      hasColors && (isTemp || ["colorshift", "colorwarp"].includes(rgbName)) ? el("label", {}, isTemp ? "Warm color" : "Middle color", picker("middle")) : null,
+      hasColors && !isStatic ? el("label", {}, isTemp ? "Hot color" : "End color", picker("end")) : null,
+      isTemp && rgbName !== "probe-temperature" ? num("minTemp", "Cold at (°C)") : null,
+      isTemp && rgbName !== "probe-temperature" ? num("maxTemp", "Hot at (°C)") : null),
+    hasColors && !isTemp && !isStatic ? el("p", { class: "hint" }, colorNote) : null,
+    el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Save")));
+}
+
+// ---------------------------------------------------------------- settings
+function renderSettings() {
+  const s = state.settings;
+  const toggle = (key, label, hint) => {
+    const c = el("input", { type: "checkbox", onchange: async e => { if (await api("/api/settings", { [key]: e.target.checked })) toast("Saved"); } });
+    c.checked = !!s[key];
+    return el("div", {}, el("label", { class: "inline", style: "color:var(--text)" }, c, label), hint ? el("div", { class: "hint", style: "margin-left:24px" }, hint) : null);
+  };
+  const lhm = el("input", { type: "url", value: s.lhmUrl, style: "flex:1;min-width:240px" });
+  $("#settings").replaceChildren(
+    toggle("autostart", "Start with Windows", "Runs in the tray at sign-in. No administrator rights needed."),
+    toggle("openBrowser", "Open this dashboard when OpenLinkHub starts manually"),
+    el("div", {},
+      el("div", { style: "margin-bottom:6px" }, "LibreHardwareMonitor URL ", el("span", { class: "hint" }, state.sensors.lhmAvailable ? "· connected" : "· not reachable")),
+      el("div", { class: "row" }, lhm, el("button", { class: "btn", onclick: async () => { if (await api("/api/settings", { lhmUrl: lhm.value })) toast("Saved"); } }, "Save")),
+      el("div", { class: "hint", style: "margin-top:6px" }, "Needed for CPU temperature on Windows. In LibreHardwareMonitor: run as administrator, then Options → Remote Web Server → Run. Also tick Options → Start Minimized and Run On Windows Startup.")),
+    el("div", { class: "hint" }, `Settings and profiles are stored in ${s.dataDir}. ${s.installed ? "Installed for this user — uninstall from Settings → Apps." : "Running without installing."}`),
+    el("div", { class: "actions" }, el("button", { class: "btn danger", onclick: async () => {
+      if (confirm("Quit OpenLinkHub? Lighting and fans return to the hub's built-in (hardware) mode.") && await api("/api/quit")) {
+        document.body.replaceChildren(el("div", { class: "empty" }, "OpenLinkHub has stopped. Start it again from the Start menu."));
+      }
+    } }, "Quit OpenLinkHub")),
+    el("div", { class: "hint" }, `Version ${state.version} · Runs entirely offline: it only talks to your hubs and, if enabled, LibreHardwareMonitor on this PC. · `,
+      el("a", { href: "https://github.com/CodeCat04/OpenLinkHubWindows", target: "_blank", rel: "noopener noreferrer" }, "Source code & help")));
+}
+
+async function loadLogs() {
+  try { const r = await fetch("/api/logs", { cache: "no-store" }); const lines = await r.json(); const pre = $("#logs"); pre.textContent = lines.join("\n"); pre.scrollTop = pre.scrollHeight; } catch {}
+}
+$("#refresh-logs").addEventListener("click", loadLogs);
+
+poll();
+</script>
 </body>
 </html>

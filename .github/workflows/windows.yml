@@ -1,14 +1,11 @@
 name: Windows
 
-# Tests every push and pull request touching the Windows app.
-# Pushing a tag like v0.1.0 also builds OpenLinkHub.exe and publishes it as a GitHub Release.
+# Checks that every push and pull request tests, lints and builds, including the installer.
+# Nothing is published: people build OpenLinkHub themselves (see README).
 on:
   push:
     branches: [ "main" ]
-    tags: [ "v*" ]
-    paths: [ "rust/**", "database/rgb.json", "database/external/lsh.json", ".github/workflows/windows.yml" ]
   pull_request:
-    paths: [ "rust/**", "database/rgb.json", "database/external/lsh.json", ".github/workflows/windows.yml" ]
 
 permissions:
   contents: read
@@ -16,54 +13,20 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
 
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal --component clippy
 
-      - name: Test
-        run: cargo test --locked
-
       - name: Clippy
-        run: cargo clippy --locked --release -- -D warnings
+        run: cargo clippy --locked --release --all-targets -- -D warnings
 
-      - name: Build
-        run: cargo build --locked --release
-
-      - name: Package
+      - name: Inno Setup
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/OpenLinkHub.exe dist/
-          Copy-Item install.ps1 dist/
-          (Get-FileHash dist/OpenLinkHub.exe -Algorithm SHA256).Hash.ToLower() + "  OpenLinkHub.exe" | Out-File -Encoding ascii dist/OpenLinkHub.exe.sha256
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup --no-progress -y }
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: OpenLinkHub-windows
-          path: rust/dist/*
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: OpenLinkHub-windows
-          path: dist
-
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "OpenLinkHub for Windows $GITHUB_REF_NAME" \
-            --notes "Download **OpenLinkHub.exe** and double-click it. See the README for details."
+      - name: Test and build (exe + installer)
+        shell: pwsh
+        run: ./build.ps1 -RequireInstaller

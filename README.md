@@ -2,29 +2,61 @@
 
 Control Corsair **iCUE LINK** fans, AIOs and lighting on Windows 10/11 without iCUE.
 
-A small, open-source Windows app (a single 2 MB `.exe`) that runs in the system tray and gives you a local web dashboard for fan curves, RGB effects and live temperatures. It runs **entirely offline**: no account, no telemetry, no update checks, and nothing leaves your PC.
+A small, open-source Windows app that runs in the system tray and gives you a local web dashboard for fan curves, RGB effects and live temperatures. It runs **entirely offline**: no account, no telemetry, no update checks, and nothing leaves your PC.
 
 This is a Windows rewrite, in Rust, of the iCUE LINK support from **OpenLinkHub**, the Linux project by Nikola Jurkovic. The device protocol, fan-curve logic and lighting effects are ported from it.
 
 ---
 
-## Install
+## Install (build it yourself)
 
-1. **Quit or uninstall iCUE** (and any other RGB software, such as SignalRGB). Only one program can control the hub.
-2. Download **`OpenLinkHub.exe`** from the [Releases page](https://github.com/CodeCat04/OpenLinkHubWindows/releases/latest).
-3. Double-click it and choose **Yes** when asked to install.
+OpenLinkHub isn't distributed as a download. You build it from this source code, which takes about 10 minutes the first time, and you get a normal Windows installer.
 
-That's it. OpenLinkHub copies itself to your user profile, starts automatically when you sign in, adds itself to the Start menu, and opens the dashboard. **No administrator rights are needed.**
+### 1. One-time setup
 
-> **"Windows protected your PC"?** The app isn't code-signed (certificates cost money), so SmartScreen warns about new downloads. Click **More info → Run anyway**. You can check the download against the `OpenLinkHub.exe.sha256` file on the Releases page.
-
-**Prefer not to install?** Choose **No** at the prompt and it just runs from wherever you saved it. You won't be asked again.
-
-**PowerShell one-liner** (downloads from this repository's Releases, verifies the checksum, installs):
+Open **PowerShell** and install the build tools with `winget` (it's built into Windows 10/11):
 
 ```powershell
-irm https://github.com/CodeCat04/OpenLinkHubWindows/releases/latest/download/install.ps1 | iex
+winget install Rustlang.Rustup
+winget install JRSoftware.InnoSetup
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+winget install Git.Git
 ```
+
+- **Rust** is the language OpenLinkHub is written in.
+- **Inno Setup** builds the installer.
+- **Visual Studio Build Tools** (C++ workload) provide the Windows linker and resource compiler that Rust uses. This is a large download and asks for administrator approval.
+- **Git** downloads the source code. You can skip it and use *Code → Download ZIP* on the repository page instead.
+
+**Close and reopen PowerShell** afterwards so the new tools are on your `PATH`.
+
+### 2. Get the source and build
+
+```powershell
+git clone https://github.com/CodeCat04/OpenLinkHubWindows.git
+cd OpenLinkHubWindows
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+The script runs the tests, builds the app and creates the installer in the `dist` folder:
+
+| File | What it is |
+|---|---|
+| `dist\OpenLinkHub-Setup-<version>.exe` | **The installer.** Use this. |
+| `dist\OpenLinkHub.exe` | The app on its own, if you'd rather run it portable without installing. |
+
+### 3. Install
+
+1. **Quit or uninstall iCUE** (and any other RGB software, such as SignalRGB). Only one program can control the hub.
+2. Run **`dist\OpenLinkHub-Setup-<version>.exe`** and click through it like any other installer.
+
+The installer:
+- installs for your user account only, so **no administrator prompt**, the same way VS Code and Discord install
+- adds a Start menu shortcut, and optionally a desktop shortcut
+- offers to start OpenLinkHub automatically when you sign in (recommended)
+- registers in **Settings → Apps** for a normal uninstall
+
+> Installers you build yourself don't trigger the "Windows protected your PC" SmartScreen warning. If you give a copy to someone else over the internet, they'll see it, because the app isn't code-signed. They can click **More info → Run anyway**.
 
 ## Using it
 
@@ -78,7 +110,7 @@ Ported from the Linux project:
 - **Coolant protection:** if AIO coolant goes above 57 °C, all fans and the pump run at 100% and the lights pulse red until it drops below 52 °C.
 - **Minimum speeds:** the pump never goes below 50% on AIOs (31% on TITAN), and fans never go below 20% unless you enable *zero RPM* on a curve.
 - **Port power protection:** lighting brightness is capped automatically when a hub port powers too many LEDs.
-- **Clean hand-back:** on quit, the hub returns to hardware mode so fans keep running on the hub's own control.
+- **Clean hand-back:** on quit, update or uninstall, the hub returns to hardware mode so fans keep running on the hub's own control.
 
 ## Privacy and security
 
@@ -88,40 +120,49 @@ Ported from the Linux project:
 
 ## Updating and uninstalling
 
-- **Update:** download the new `OpenLinkHub.exe` and double-click it. It offers to replace the installed copy and keeps your settings.
-- **Uninstall:** *Settings → Apps → Installed apps → OpenLinkHub → Uninstall*. This removes the program, the autostart entry and the shortcut. To also remove your settings, delete `%APPDATA%\OpenLinkHub`.
+- **Update:** in the `OpenLinkHubWindows` folder run `git pull` (or download the ZIP again), then `.\build.ps1`, and run the new installer. It stops the running copy, upgrades it in place, and keeps your settings.
+- **Uninstall:** *Settings → Apps → Installed apps → OpenLinkHub → Uninstall*. This removes the program, shortcuts and the autostart entry, and asks whether to also delete your settings.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
+| `build.ps1` says Rust is not installed | Run `winget install Rustlang.Rustup`, then **open a new PowerShell window**. |
+| Build error mentioning `link.exe`, `rc.exe` or `embed-resource` | The Visual Studio Build Tools C++ workload is missing. Run the Build Tools command from step 1. |
+| Only `OpenLinkHub.exe` was built, with no installer | Inno Setup isn't installed. Run `winget install JRSoftware.InnoSetup` and build again. |
+| "running scripts is disabled on this system" | Use the full command shown above: `powershell -ExecutionPolicy Bypass -File .\build.ps1`. |
 | "No iCUE LINK System Hub found" | Check the hub's USB cable to the motherboard. Make sure iCUE and other RGB software are fully closed (also in the tray). The hub is picked up within a few seconds once it's free. |
 | Fans run at a fixed speed / "CPU temperature unavailable" | Set up LibreHardwareMonitor (above), or switch those fans to the *Liquid Temperature* curve. |
 | Lighting or fans stopped after sleep | Give it a few seconds: the hub is re-detected and set up again automatically. If not, quit and start OpenLinkHub from the Start menu, and check the log. |
 | Dashboard doesn't open | Make sure OpenLinkHub is running (tray icon), then go to `http://127.0.0.1:27003`. If another program uses port 27003, change `listenPort` in `%APPDATA%\OpenLinkHub\config.json`. |
 | Something else | Open *Settings → Log* in the dashboard, or the log file, and open an issue on this repository with the relevant lines. |
 
-## Building from source
-
-Requirements: Rust (stable, installed via rustup) and Visual Studio Build Tools with the *Desktop development with C++* workload.
+## For developers
 
 ```powershell
-cd rust
-cargo test
-cargo build --release      # → rust\target\release\OpenLinkHub.exe
+cargo test                 # unit tests
+cargo run                  # debug build with a console window for logs
+.\build.ps1 -NoInstaller   # release OpenLinkHub.exe only
 ```
 
-The `.exe` is fully self-contained: the dashboard and device data are embedded, and the C runtime is linked statically.
+The `.exe` is fully self-contained: the dashboard and device data are embedded, and the C runtime is linked statically. The GitHub Actions *Windows* workflow runs clippy, the tests and a full build (exe and installer) on every push and pull request. It doesn't publish anything.
 
-Pushing a tag like `v0.2.0` runs the *Windows* GitHub Actions workflow, which tests, builds, and publishes `OpenLinkHub.exe`, its `.sha256` checksum and `install.ps1` as a release.
-
-### Repository layout
+Command-line options:
+- `--background`: start without opening the dashboard (used by autostart)
+- `--stop`: quit a running OpenLinkHub and wait for it (used by the installer)
 
 | Path | Contents |
 |---|---|
-| `rust/` | **The Windows app.** `src/hub/` is the iCUE LINK protocol driver, `src/rgb/` the lighting effects, `src/temperatures.rs` the fan curves, `src/sensors.rs` the CPU/GPU temperatures, `src/app.rs` the tray, install and autostart, and `web/index.html` the dashboard. |
-| `database/external/lsh.json`, `database/rgb.json` | Device definitions and default lighting settings, shared with the Linux project and embedded into the `.exe` at build time. |
-| everything else (`src/`, `static/`, `web/`, `*.sh`, …) | The original Linux (Go) application, kept as the reference implementation for porting more devices. It isn't part of the Windows build. |
+| `src/hub/` | iCUE LINK System Hub protocol driver, device discovery and hot-plug |
+| `src/rgb/` | Lighting engine and the 27 effects |
+| `src/temperatures.rs`, `src/sensors.rs` | Fan curves; CPU/GPU temperatures |
+| `src/server.rs`, `web/index.html` | Local API and dashboard |
+| `src/app.rs`, `src/main.rs` | Tray icon, autostart, startup |
+| `data/` | Device definitions and default lighting settings (from the Linux project), embedded at build time |
+| `installer/OpenLinkHub.iss` | Inno Setup installer script |
+| `build.ps1` | One-step build of the app and installer |
+
+The original Linux (Go) application this was ported from remains in this repository's git history. Look at commits before the Windows rewrite if you want to port more devices.
 
 ## License
 

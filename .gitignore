@@ -1,37 +1,8 @@
+# Build output
+/target/
+/dist/
+
+# Editors
 .idea/
-build/
-rpmbuild/
-release/
-docker/
-ppa/
-build.sh
-changelog.sh
-build_local.sh
-OpenLinkHub
-Buildfile
-config.json
-stdout.log
-dashboard.json
-display.json
-database/temperatures/*.json
-database/profiles/*.json
-database/rgb/*.json
-database/key-assignments/*.json
-database/macros/*.json
-database/led/*.json
-database/lcd/*.json
-database/scheduler.json
-database/audio.json
-org.openlinkhub.OpenLinkHub.json
-.flatpak-builder/
-flatpak/
-flatpak-build/
-copr/
-OpenLinkHub.spec.template
-*.tar.gz
-update.json
-update.json.sig
-.devcontainer/devcontainer-lock.json
-# Windows (Rust) build output
-rust/target/
-rust/dist/
+.vscode/
+*.swp
