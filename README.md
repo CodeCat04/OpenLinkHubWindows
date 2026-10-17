@@ -1,264 +1,130 @@
-# OpenLinkHub interface for Linux
-An open-source Linux interface for iCUE LINK hubs and other Corsair AIOs and hubs.
-Manage RGB lighting, fan speeds, system metrics, as well as keyboards, mice, and headsets via a web dashboard.
+# OpenLinkHub for Windows
 
-![Build](https://github.com/jurkovic-nikola/OpenLinkHub/actions/workflows/go.yml/badge.svg)
-[![](https://dcbadge.limes.pink/api/server/https://discord.gg/mPHcasZRPy?style=flat)](https://discord.gg/mPHcasZRPy)
+Control Corsair **iCUE LINK** fans, AIOs and lighting on Windows 10/11 without iCUE.
 
-**Available in other languages:** [Portuguese (Brazil)](README-pt_BR.md)
+A small, open-source Windows app (a single 2 MB `.exe`) that runs in the system tray and gives you a local web dashboard for fan curves, RGB effects and live temperatures. It runs **entirely offline**: no account, no telemetry, no update checks, and nothing leaves your PC.
 
-## Features
+This is a Windows rewrite, in Rust, of the iCUE LINK support from **OpenLinkHub**, the Linux project by Nikola Jurkovic. The device protocol, fan-curve logic and lighting effects are ported from it.
 
-- Web-based UI accessible at `http://localhost:27003`
-- Control AIO coolers, fans, hubs, pumps, LCDs and RGB lighting
-- Manage keyboards, mice and headsets
-- Support for DDR4 and DDR5 memory
-- Custom fan profiles, temperature sensors and RGB editor
-- If you need system tray menu - https://github.com/jurkovic-nikola/openlinkhub-tray
-- [Supported device list](docs/supported-devices.md)
-- [SCUF Controller Audio Config](docs/scuf-controller.md)
-- [KDE System Monitor Sensor Face](https://github.com/jurkovic-nikola/openlinkhub-sensorfaces)
-- [Memory DDR4 / DDR5](docs/memory-configuration.md)
-- [Motherboard PWM](docs/motherboard-pwm.md)
-- [OpenRGB Integration](openrgb/README.md)
-- [XENEON EDGE KDE](docs/xeneon-edge-kde.md)
+---
 
-![Web UI](https://github.com/jurkovic-nikola/OpenLinkHub/blob/main/static/img/ui.png?raw=true)
+## Install
 
-## Info
-- This project was created out of necessity to control fans and pumps on workstations after switching everything to Linux.
-- I take no responsibility for this code at all. Use this at your own risk.
-- Most of the devices are actually tested on live hardware.
-- Take care and have fun!
-- This project is not an official Corsair product.
-## Installation (recommended)
-```bash
-curl -fsSL https://raw.githubusercontent.com/jurkovic-nikola/OpenLinkHub/main/remote-install.sh | bash
-```
-This script will:
-- Create a system group named openlinkhub
-- Add your current user to openlinkhub 
-- Install OpenLinkHub in your home directory. 
-- Create a user systemd service 
-- Copy 99-openlinkhub.rules to /etc/udev/rules.d/ 
-- Start the service after installation. 
-- You can use this script for installation or upgrade purposes.
-- Before running this script, uninstall any previously installed versions of OpenLinkHub
+1. **Quit or uninstall iCUE** (and any other RGB software, such as SignalRGB). Only one program can control the hub.
+2. Download **`OpenLinkHub.exe`** from the [Releases page](https://github.com/CodeCat04/OpenLinkHubWindows/releases/latest).
+3. Double-click it and choose **Yes** when asked to install.
 
-## Installation (automatic)
-1. Download either .deb or .rpm package from the latest Release, depending on your Linux distribution
-2. Open a terminal
-3. Navigate to the folder where the package is downloaded
-```bash
-# Debian-Based (deb)
-$ sudo apt install ./OpenLinkHub_?.?.?_amd64.deb 
+That's it. OpenLinkHub copies itself to your user profile, starts automatically when you sign in, adds itself to the Start menu, and opens the dashboard. **No administrator rights are needed.**
 
-# RPM-based (rpm)
-$ sudo dnf install ./OpenLinkHub-?.?.?-1.x86_64.rpm
+> **"Windows protected your PC"?** The app isn't code-signed (certificates cost money), so SmartScreen warns about new downloads. Click **More info → Run anyway**. You can check the download against the `OpenLinkHub.exe.sha256` file on the Releases page.
+
+**Prefer not to install?** Choose **No** at the prompt and it just runs from wherever you saved it. You won't be asked again.
+
+**PowerShell one-liner** (downloads from this repository's Releases, verifies the checksum, installs):
+
+```powershell
+irm https://github.com/CodeCat04/OpenLinkHubWindows/releases/latest/download/install.ps1 | iex
 ```
 
-## Installation (PPA)
-```bash
-$ sudo add-apt-repository ppa:jurkovic-nikola/openlinkhub
-$ sudo apt update
-$ sudo apt-get install openlinkhub
+## Using it
+
+- **Open the dashboard:** double-click the tray icon, use the Start menu, or go to `http://127.0.0.1:27003` in your browser.
+- **Quit:** right-click the tray icon → *Quit*. The hub returns to its built-in (hardware) lighting and fan behaviour.
+
+The dashboard has four tabs:
+
+| Tab | What you can do |
+|---|---|
+| **Devices** | Live RPM, temperatures and duty for every device on each hub. Pick a fan curve and a lighting effect per device or for all at once, set brightness, turn lights off, give devices labels, and set custom colors per device. |
+| **Fan curves** | Built-in curves (Quiet, Normal, Performance, Liquid Temperature) plus your own. Drag points on the graph; a marker shows the live temperature. Curves can follow CPU, GPU, AIO coolant, a temperature probe, a PSU, or any LibreHardwareMonitor sensor. |
+| **Lighting** | 27 effects (Static, Rainbow, Spiral Rainbow, Color Pulse, Color Shift, Wave, Rain, Nebula, Marquee, temperature-reactive, and more). Adjust speed and colors. |
+| **Settings** | Start with Windows, the LibreHardwareMonitor address, the log viewer, and Quit. |
+
+### CPU temperature (optional, recommended)
+
+Windows doesn't let normal programs read CPU temperature. OpenLinkHub reads it from **LibreHardwareMonitor**, a free open-source monitor, if it's running on the same PC:
+
+1. Download LibreHardwareMonitor from its official GitHub releases page and unzip it anywhere.
+2. Run `LibreHardwareMonitor.exe` **as administrator**.
+3. In its menu, enable **Options → Remote Web Server → Run** (the default port 8085 is what OpenLinkHub expects).
+4. Also tick **Options → Start Minimized**, **Minimize To Tray** and **Run On Windows Startup** so it's always available.
+
+Without it:
+- **GPU temperature** still works on NVIDIA cards (via the driver's `nvidia-smi`).
+- **AIO pumps** default to the *Liquid Temperature* curve, which uses the AIO's own coolant sensor.
+- **Fans on a CPU-based curve** behave as if the CPU were at 50 °C. The dashboard shows a reminder. You can also switch fans to *Liquid Temperature*, which is a good choice for radiator fans anyway.
+
+## Supported hardware
+
+Everything connected to an **iCUE LINK System Hub**:
+
+- **Fans:** QX RGB, LX RGB, RX, RX RGB, RX MAX, RX RGB MAX
+- **AIOs:** H100i, H115i, H150i, H170i, TITAN 240/280/360/420 (pump speed, coolant temperature and pump lighting)
+- **Custom loop:** XC7 ELITE, XD5 ELITE, XD6 ELITE, XG3 HYBRID, XG7 RGB, generic AIO pump
+- **Other:** iCUE COMMANDER DUO, VRM Cooler Module, HX1000i/HX1200i/HX1500i on LINK (fan, temperature and power draw), QX temperature probes
+
+Several hubs are supported at once. Hubs are detected automatically, including after unplugging them or waking from sleep.
+
+**Not supported yet** (the Linux project supports these, but they haven't been ported):
+- the LCD screens on pump caps and XD5/XC7 blocks (the screens stay on their built-in display)
+- LED strips attached through the iCUE LINK Adapter
+- Corsair devices that aren't on a LINK hub (keyboards, mice, headsets, Commander Core/Pro, older AIOs, RAM)
+- OpenRGB integration
+
+## Built-in safety
+
+Ported from the Linux project:
+
+- **Coolant protection:** if AIO coolant goes above 57 °C, all fans and the pump run at 100% and the lights pulse red until it drops below 52 °C.
+- **Minimum speeds:** the pump never goes below 50% on AIOs (31% on TITAN), and fans never go below 20% unless you enable *zero RPM* on a curve.
+- **Port power protection:** lighting brightness is capped automatically when a hub port powers too many LEDs.
+- **Clean hand-back:** on quit, the hub returns to hardware mode so fans keep running on the hub's own control.
+
+## Privacy and security
+
+- **Offline:** OpenLinkHub talks only to your hubs over USB, and optionally to LibreHardwareMonitor on `127.0.0.1`. It refuses to connect to any address that isn't on your own PC, so it can't be pointed elsewhere even by mistake. There is no update check and no telemetry.
+- **Local-only dashboard:** the dashboard listens on `127.0.0.1` only, and blocks requests from other websites. A page you visit in your browser can't change your fan speeds.
+- **Your data:** settings live in `%APPDATA%\OpenLinkHub` (`config.json`, `hubs\*.json`, your curves and lighting). The log is `%APPDATA%\OpenLinkHub\openlinkhub.log`. It shows only the last 4 characters of hub serial numbers, so it's safe to share when asking for help.
+
+## Updating and uninstalling
+
+- **Update:** download the new `OpenLinkHub.exe` and double-click it. It offers to replace the installed copy and keeps your settings.
+- **Uninstall:** *Settings → Apps → Installed apps → OpenLinkHub → Uninstall*. This removes the program, the autostart entry and the shortcut. To also remove your settings, delete `%APPDATA%\OpenLinkHub`.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "No iCUE LINK System Hub found" | Check the hub's USB cable to the motherboard. Make sure iCUE and other RGB software are fully closed (also in the tray). The hub is picked up within a few seconds once it's free. |
+| Fans run at a fixed speed / "CPU temperature unavailable" | Set up LibreHardwareMonitor (above), or switch those fans to the *Liquid Temperature* curve. |
+| Lighting or fans stopped after sleep | Give it a few seconds: the hub is re-detected and set up again automatically. If not, quit and start OpenLinkHub from the Start menu, and check the log. |
+| Dashboard doesn't open | Make sure OpenLinkHub is running (tray icon), then go to `http://127.0.0.1:27003`. If another program uses port 27003, change `listenPort` in `%APPDATA%\OpenLinkHub\config.json`. |
+| Something else | Open *Settings → Log* in the dashboard, or the log file, and open an issue on this repository with the relevant lines. |
+
+## Building from source
+
+Requirements: Rust (stable, installed via rustup) and Visual Studio Build Tools with the *Desktop development with C++* workload.
+
+```powershell
+cd rust
+cargo test
+cargo build --release      # → rust\target\release\OpenLinkHub.exe
 ```
 
-## Installation (Copr)
-```bash
-$ sudo dnf copr enable jurkovic-nikola/OpenLinkHub
-$ sudo dnf install OpenLinkHub
-```
+The `.exe` is fully self-contained: the dashboard and device data are embedded, and the C runtime is linked statically.
 
-## Installation (manual)
-### 1. Requirements
-- libudev-dev
-- usbutils
-- libpipewire-dev
-- pkg-config
-- go 1.25.0 - https://go.dev/dl/
-```bash
-# Required packages (deb)
-$ sudo apt-get install libudev-dev
-$ sudo apt-get install usbutils
-$ sudo apt-get install libpipewire-0.3-dev
-$ sudo apt-get install pkg-config
+Pushing a tag like `v0.2.0` runs the *Windows* GitHub Actions workflow, which tests, builds, and publishes `OpenLinkHub.exe`, its `.sha256` checksum and `install.ps1` as a release.
 
-# Required packages (rpm)
-$ sudo dnf install libudev-devel
-$ sudo dnf install usbutils
-$ sudo dnf install pipewire-devel
-$ sudo dnf install pkg-config
-```
-Or use the provided devcontainer in VScode. This is useful for immutable distributions.
-### 2. Build & install
-```bash
-$ git clone https://github.com/jurkovic-nikola/OpenLinkHub.git
-$ cd OpenLinkHub/
-$ CGO_CFLAGS_ALLOW='-fno-strict-overflow' go build .
-$ chmod +x install.sh
-$ sudo ./install.sh
-```
+### Repository layout
 
-### 3. Installation from compiled build
-```bash
-# Download latest build from https://github.com/jurkovic-nikola/OpenLinkHub/releases/latest
-$ wget "https://github.com/jurkovic-nikola/OpenLinkHub/releases/latest/download/OpenLinkHub_$(curl -s https://api.github.com/repos/jurkovic-nikola/OpenLinkHub/releases/latest | jq -r '.tag_name')_amd64.tar.gz"
-$ tar xf OpenLinkHub_?.?.?_amd64.tar.gz
-$ cd /home/$USER/OpenLinkHub/
-$ chmod +x install.sh
-$ sudo ./install.sh
-```
-### 4. Immutable distributions (Bazzite OS, SteamOS, etc...)
-```bash
-# Do not install RPM or DEB packages on immutable distributions, they will not work.
-# This same procedure may be followed to update an existing installation.
-# Download the latest tar.gz from the Release page, or use the following command to download the latest release.
-$ wget "https://github.com/jurkovic-nikola/OpenLinkHub/releases/latest/download/OpenLinkHub_$(curl -s https://api.github.com/repos/jurkovic-nikola/OpenLinkHub/releases/latest | jq -r '.tag_name')_amd64.tar.gz"
+| Path | Contents |
+|---|---|
+| `rust/` | **The Windows app.** `src/hub/` is the iCUE LINK protocol driver, `src/rgb/` the lighting effects, `src/temperatures.rs` the fan curves, `src/sensors.rs` the CPU/GPU temperatures, `src/app.rs` the tray, install and autostart, and `web/index.html` the dashboard. |
+| `database/external/lsh.json`, `database/rgb.json` | Device definitions and default lighting settings, shared with the Linux project and embedded into the `.exe` at build time. |
+| everything else (`src/`, `static/`, `web/`, `*.sh`, …) | The original Linux (Go) application, kept as the reference implementation for porting more devices. It isn't part of the Windows build. |
 
-# Extract the package to your home directory
-$ tar xf OpenLinkHub_?.?.?_amd64.tar.gz -C /home/$USER/
+## License
 
-# Go to the extract folder
-$ cd /home/$USER/OpenLinkHub
+GPL-3.0-or-later, the same as the original OpenLinkHub project. See [LICENSE](LICENSE).
 
-# Make install-user-space.sh executable
-$ chmod +x install-user-space.sh
-
-# Run install-user-space.sh. Enter your password for sudo when asked to copy 99-openlinkhub.rules file
-$ ./install-user-space.sh
-
-# Restart 
-$ systemctl reboot
-
-# Check if service is running
-$ systemctl status --user OpenLinkHub.service
-```
-
-### 5. Usage (non-immutable distributions)
-```bash
-sudo systemctl start OpenLinkHub.service
-xdg-open http://127.0.0.1:27003
-```
-
-### 6. Configuration
-`/opt/OpenLinkHub/config.json`
-```json
-{
-  "debug": false,
-  "listenPort": 27003,
-  "listenAddress": "127.0.0.1",
-  "cpuSensorChip": "k10temp",
-  "manual": false,
-  "frontend": true,
-  "metrics": true,
-  "resumeDelay": 15000,
-  "memory": false,
-  "memorySmBus": "i2c-0",
-  "memoryType": 4,
-  "exclude": [],
-  "decodeMemorySku": true,
-  "memorySku": "",
-  "logFile": "",
-  "logLevel": "info",
-  "enhancementKits": [],
-  "temperatureOffset": 0,
-  "amdGpuIndex": 0,
-  "amdsmiPath": "",
-  "cpuTempFile": "",
-  "graphProfiles": false,
-  "ramTempViaHwmon": false,
-  "nvidiaGpuIndex": [0],
-  "defaultNvidiaGPU": 0,
-  "enableGamepad": true,
-  "enableMotherboard": false,
-  "motherboardBiosOnExit": false
-}
-```
-- listenPort: HTTP server port.
-- listenAddress: Address for HTTP server to listen on.
-- cpuSensorChip: CPU sensor chip for temperature. `k10temp` or `zenpower` for AMD and `coretemp` for Intel
-- manual: set to true if you want to use your own UI for device control. Setting this to true will disable temperature monitoring and automatic device speed adjustments.
-- frontend: set to false if you do not need the WebUI console, and you are making your own UI app.
-- metrics: enable or disable Prometheus metrics
-- resumeDelay: amount of time in milliseconds for the program to reinitialize all devices after sleep / resume
-- memory: Enable overview / control over the memory
-- memorySmBus: i2c smbus sensor id
-- memoryType: 4 for DDR4, 5 for DDR5
-- exclude: list of device IDs in uint16 format to exclude from program control
-- decodeMemorySku: set to false to manually define `memorySku` value.
-- memorySku: Memory part number, e.g. (CMT64GX5M2B5600Z40)
-- You can find the memory part number by running the following command: `sudo dmidecode -t memory | grep 'Part Number'`
-- logFile: custom location for logging. Default is empty.
-  - Defining `-` for logFile will send all logs to standard console output.
-  - If you change the location of logging, make sure the application username has permission to write to that folder.
-- logLevel: log level to log in console or file.
-- enhancementKits: DDR4/DDR5 Light Enhancement Kits addresses.
-- If your kit is installed in the first and third slot, the value would be: `"enhancementKits": [80,82],`. This value is a byte value converted from hexadecimal output in `i2cdetect`
-  - When kits are used, you need to set `decodeMemorySku` to `false` and define `memorySku`
-- temperatureOffset: Temperature offset for AMD Threadripper CPUs
-- amdGpuIndex: GPU device index. You can find your GPU index via `amd-smi static --asic --json`
-- amdsmiPath: Manual path to amd-smi binary (not recommended). A better way is to define `amd-smi` path in `$PATH` variable if missing.
-- cpuTempFile: custom hwmon temperature input file, e.g. tempX_input. Use in combination with `cpuSensorChip`.
-- graphProfiles: Setting this value to `true` will enable graph-based temperature profiles on `/temperature` endpoint and enable temperature interpolation.
-- ramTempViaHwmon: Switch to true if you want to monitor RAM temperature via the hwmon system. With this option, you don't have to unload modules to get the temperature. (Require 6.11+ kernel)
-- nvidiaGpuIndex: NVIDIA multi-gpu setup.
-- defaultNvidiaGPU: default index of NVIDIA GPU, default is 0.
-  - If you use vfio-pci/pass-through, you have to set it to -1 to avoid conflicts with NVIDIA modules.
-- enableGamepad: Enable or disable Virtual Gamepad used for SCUF controllers.
-- enableMotherboard: Enable control of motherboard PWM headers.
-- motherboardBiosOnExit: Switch PWM headers to BIOS mode when program exits.
-
-### 7. Progressive Web App (PWA) UI
-The web UI supports installation as a progressive web app (PWA). With a supported browser, this allows the UI to appear as a standalone application.
-Chromium-based browsers support PWAs; Firefox currently does not.
-GNOME 'Web,' also known as 'Epiphany', is a good option for PWAs on GNOME systems.
-
-## Uninstall
-```bash
-# Stop service
-sudo systemctl stop OpenLinkHub.service
-
-# Remove application directory
-sudo rm -rf /opt/OpenLinkHub/
-
-# Remove systemd file (file location can be found by running sudo systemctl status OpenLinkHub.service)
-sudo rm /etc/systemd/system/OpenLinkHub.service
-# or
-sudo rm /usr/lib/systemd/system/OpenLinkHub.service
-
-# Reload systemd
-sudo systemctl daemon-reload
-
-# Remove udev rules
-sudo rm -f /etc/udev/rules.d/99-openlinkhub.rules
-sudo rm -f /etc/udev/rules.d/98-corsair-memory.rules
-
-# Reload udev
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-## Running in Docker
-As an alternative, OpenLinkHub can be run in Docker, using the Dockerfile in this repository to build it locally. A configuration file has to be mounted to /opt/OpenLinkHub/config.json
-```bash
-$ docker build . -t openlinkhub
-$ # To build a specific version, you can use the GIT_TAG build argument
-$ docker build --build-arg GIT_TAG=0.1.3-beta -t openlinkhub .
-
-$ docker run --privileged openlinkhub
-
-# For WebUI access, networking is required
-$ docker run --network host --privileged openlinkhub
-```
-
-## LCD
-- LCD images / animations are located in `/opt/OpenLinkHub/database/lcd/images/`
-## Dashboard
-- Device Dashboard is accessible by browser via the link `http://127.0.0.1:27003/`
-- Device Dashboard allows you to control your devices.
-## RGB
-- RGB configuration is located at `database/rgb/your-device-serial.json` file
-- RGB can be configured via the RGB Editor in the Dashboard
-## API
-- OpenLinkHub ships with a built-in HTTP server for device overview and control.
-- Documentation is available at [API Page](api/README.md)
+Corsair and iCUE are trademarks of Corsair Gaming, Inc. This project isn't affiliated with or endorsed by Corsair.

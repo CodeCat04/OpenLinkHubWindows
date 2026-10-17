@@ -32,3 +32,6 @@ OpenLinkHub.spec.template
 update.json
 update.json.sig
 .devcontainer/devcontainer-lock.json
+# Windows (Rust) build output
+rust/target/
+rust/dist/
