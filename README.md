@@ -68,7 +68,7 @@ The installer:
 - **Switch profile:** the *Profile* switcher at the top of the dashboard, or right-click the tray icon. A profile puts every fan on its curve (pumps keep their own) and remembers its own lighting: whatever you change while a profile is active is saved with it, and comes back when you switch to it again. A profile you haven't used yet starts with your current lighting.
   - **Quiet, Normal and Performance** are always there. You can edit their curves on the *Fan curves* tab; *Reset to default* puts them back.
   - **Custom profiles:** every curve you create on the *Fan curves* tab is also a profile. Pick it from the *Custom* dropdown next to the switcher, or from the tray menu.
-- **Fan speeds:** hover the fan button at the top right to see every fan's and pump's speed. Click it to keep it open; click again (or press Esc) to close it.
+- **Fan speeds:** hover the fan button at the top right to see every fan's and pump's speed. Click it to keep it open; click again (or press Esc) to close it. The bulb next to each fan turns just that fan's lights off so you can spot it in the case; click again to turn them back on (they also come back when OpenLinkHub restarts).
 - **Quit:** right-click the tray icon → *Quit*. The hub returns to its built-in (hardware) lighting and fan behaviour.
 
 The dashboard has four tabs:

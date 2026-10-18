@@ -182,6 +182,9 @@ pub struct LinkDevice {
     pub speed_profile: String,
     pub rgb_profile: String,
     pub rgb_override: RgbOverride,
+    /// LEDs temporarily turned off from the fan speeds list, to find the fan in the case.
+    /// Not saved: lighting comes back on restart.
+    pub light_off: bool,
     /// Last duty sent to the device, %.
     pub duty: u8,
     pub volts: Vec<f64>,
@@ -602,7 +605,9 @@ impl Hub {
 
         let mut frame = Vec::with_capacity(total * 3);
         for d in s.devices.values().filter(|d| d.led_channels > 0) {
-            if d.is_link_adapter {
+            if d.light_off {
+                frame.resize(frame.len() + d.led_channels as usize * 3, 0);
+            } else if d.is_link_adapter {
                 for part in &d.sub_devices {
                     // Upstream keys adapter parts' effect state as channel 48 + part index.
                     let seg = Segment { leds: part.led_channels, channel_id: 48 + part.index as i32, aio: false, probe_temp: None, rgb_override: None };
@@ -860,6 +865,15 @@ impl Hub {
             true
         })?;
         self.rgb_generation.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Turn one device's LEDs off (or back to its lighting) without saving anything.
+    /// The RGB loop picks it up on the next frame.
+    pub fn set_light_off(&self, channel: u8, off: bool) -> Result<(), String> {
+        let mut s = self.state.write().unwrap();
+        let d = s.devices.get_mut(&channel).filter(|d| d.led_channels > 0).ok_or("That device has no lights")?;
+        d.light_off = off;
         Ok(())
     }
 

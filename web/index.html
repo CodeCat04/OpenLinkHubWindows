@@ -41,16 +41,22 @@ header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, va
 .fanpop.pinned .fanbtn { border-color: var(--accent); }
 .fanlist { display: none; position: absolute; right: 0; top: 100%; padding-top: 6px; z-index: 20; }
 .fanpop.open .fanlist { display: block; }
-.fanlist .panel { width: 360px; max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,.35); padding: 8px 12px 10px; }
+.fanlist .panel { width: 390px; max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,.35); padding: 8px 12px 10px; }
 .fanlist .top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .fanlist .top b { font-size: 13px; }
 .fanlist h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 0 2px; font-weight: 600; }
-.fanrow { display: grid; grid-template-columns: 1fr auto 56px 34px; gap: 10px; align-items: center; padding: 3px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fanrow { display: grid; grid-template-columns: 24px 1fr auto 56px 34px; gap: 10px; align-items: center; padding: 3px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .fanrow .rpm, .fanrow .pct { text-align: right; }
 .fanrow .pct { color: var(--muted); font-size: 12px; }
 .fanrow .meter { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
 .fanrow .meter i { display: block; height: 100%; background: var(--fan); }
 .fanrow.pump .meter i { background: var(--pump); }
+.fanrow .light { width: 24px; height: 24px; padding: 3px; border: 0; border-radius: 6px; background: none; color: var(--accent); cursor: pointer; display: grid; place-items: center; }
+.fanrow .light:hover { background: var(--panel-2); }
+.fanrow .light svg { width: 17px; height: 17px; }
+.fanrow .light .slash { display: none; }
+.fanrow .light.off { color: var(--muted); }
+.fanrow .light.off .slash { display: block; }
 .fanrow .kind { color: var(--muted); font-size: 11.5px; margin-left: 4px; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
@@ -325,29 +331,64 @@ try { fansPinned = localStorage.getItem("fansPinned") === "1"; } catch {}
   sync();
 }
 
+// Rows are rebuilt only when the device list changes, then updated in place, so a click on a
+// light button can't land on a row that the 1-second refresh just replaced.
+let fanSig = "";
+const BULB = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path class="slash" d="M4 4l16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function renderFans() {
   const isFan = d => d.hasSpeed && !d.containsPump && !d.isPsu;
   const fans = state.hubs.flatMap(h => h.devices.filter(isFan));
   $("#fanavg").textContent = fans.length ? Math.round(fans.reduce((a, d) => a + d.rpm, 0) / fans.length) + " rpm" : "No fans";
   $("#fanbtn").setAttribute("aria-label", "Fan speeds, average " + $("#fanavg").textContent);
-  const groups = state.hubs.map(h => {
-    const devs = h.devices.filter(d => isFan(d) || d.containsPump);
-    const total = {}, seen = {};
-    for (const d of devs) total[d.name] = (total[d.name] || 0) + 1;
-    const rows = devs.map(d => {
-      seen[d.name] = (seen[d.name] || 0) + 1;
-      const base = d.name.replace(/^iCUE LINK /, "");
-      const name = d.label || (total[d.name] > 1 ? `${base} ${seen[d.name]}` : base);
-      const pump = d.containsPump;
-      return el("div", { class: "fanrow" + (pump ? " pump" : "") },
-        el("span", {}, name, pump ? el("span", { class: "kind" }, "pump") : null),
-        el("span", { class: "rpm" }, d.rpm > 0 ? d.rpm + " rpm" : "stopped"),
-        el("span", { class: "meter", title: `${d.duty}% duty` }, el("i", { style: `width:${d.duty}%` })),
-        el("span", { class: "pct" }, d.duty + "%"));
-    });
-    return rows.length ? [el("h3", {}, `Hub ${shortSerial(h.serial)} · ${devs.length} device${devs.length === 1 ? "" : "s"}`), ...rows] : [];
-  }).flat();
-  $("#fanlist-body").replaceChildren(...(groups.length ? groups : [el("p", { class: "hint" }, "No fans found.")]));
+  const shown = h => h.devices.filter(d => isFan(d) || d.containsPump);
+  const sig = JSON.stringify(state.hubs.map(h => [h.serial, shown(h).map(d => [d.channelId, d.name, d.label, d.ledChannels])]));
+  if (sig !== fanSig) {
+    fanSig = sig;
+    const groups = state.hubs.map(h => {
+      const devs = shown(h);
+      const total = {}, seen = {};
+      for (const d of devs) total[d.name] = (total[d.name] || 0) + 1;
+      const rows = devs.map(d => {
+        seen[d.name] = (seen[d.name] || 0) + 1;
+        const base = d.name.replace(/^iCUE LINK /, "");
+        const name = d.label || (total[d.name] > 1 ? `${base} ${seen[d.name]}` : base);
+        const light = d.ledChannels > 0
+          ? el("button", { class: "light", "data-k": "light", onclick: e => toggleLight(h.serial, d.channelId, e.currentTarget) })
+          : el("span");
+        if (d.ledChannels > 0) light.innerHTML = BULB;
+        return el("div", { class: "fanrow" + (d.containsPump ? " pump" : ""), "data-serial": h.serial, "data-ch": d.channelId },
+          light,
+          el("span", {}, name, d.containsPump ? el("span", { class: "kind" }, "pump") : null),
+          el("span", { class: "rpm", "data-k": "rpm" }),
+          el("span", { class: "meter", "data-k": "meter" }, el("i")),
+          el("span", { class: "pct", "data-k": "pct" }));
+      });
+      return rows.length ? [el("h3", {}, `Hub ${shortSerial(h.serial)} · ${devs.length} device${devs.length === 1 ? "" : "s"}`), ...rows] : [];
+    }).flat();
+    $("#fanlist-body").replaceChildren(...(groups.length ? groups : [el("p", { class: "hint" }, "No fans found.")]));
+  }
+  for (const h of state.hubs) for (const d of shown(h)) {
+    const row = $(`.fanrow[data-serial="${CSS.escape(h.serial)}"][data-ch="${d.channelId}"]`, $("#fanlist-body"));
+    if (!row) continue;
+    $('[data-k="rpm"]', row).textContent = d.rpm > 0 ? d.rpm + " rpm" : "stopped";
+    $('[data-k="meter"]', row).title = `${d.duty}% duty`;
+    $('[data-k="meter"] i', row).style.width = d.duty + "%";
+    $('[data-k="pct"]', row).textContent = d.duty + "%";
+    const light = $('[data-k="light"]', row);
+    if (light && !light.dataset.busy) setLightButton(light, d.lightOff);
+  }
+}
+function setLightButton(b, off) {
+  b.classList.toggle("off", off);
+  b.setAttribute("aria-pressed", off);
+  b.setAttribute("aria-label", off ? "Lights off, click to turn back on" : "Turn this device's lights off to find it");
+  b.title = off ? "Lights off (until you click again or restart OpenLinkHub)" : "Turn this device's lights off to find it";
+}
+async function toggleLight(serial, channel, b) {
+  const off = !b.classList.contains("off");
+  b.dataset.busy = "1"; setLightButton(b, off);
+  if (!await api("/api/hub/lightOff", { serial, channel, off })) setLightButton(b, !off);
+  delete b.dataset.busy;
 }
 
 function renderChips() {

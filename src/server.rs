@@ -152,6 +152,13 @@ struct BrightnessRequest {
 }
 
 #[derive(Deserialize)]
+struct LightOffRequest {
+    serial: String,
+    channel: u8,
+    off: bool,
+}
+
+#[derive(Deserialize)]
 struct RgbOffRequest {
     serial: String,
     off: bool,
@@ -221,6 +228,10 @@ fn post(path: &str, body: Value) -> Result<(), String> {
             let r: BrightnessRequest = parse(body)?;
             hub(&r.serial)?.set_brightness(r.value);
             Ok(())
+        }
+        "/api/hub/lightOff" => {
+            let r: LightOffRequest = parse(body)?;
+            hub(&r.serial)?.set_light_off(r.channel, r.off)
         }
         "/api/hub/rgbOff" => {
             let r: RgbOffRequest = parse(body)?;
