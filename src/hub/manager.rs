@@ -137,8 +137,8 @@ pub fn device_temperature(serial: &str, channel: u8) -> f32 {
     get(serial).map_or(0.0, |h| h.device_temperature(channel))
 }
 
-/// Put every fan on every hub on one of the built-in presets. Pumps keep their own curve.
-pub fn set_fan_preset(name: &str) -> Result<(), String> {
+/// Put every fan on every hub on one curve. Pumps keep their own curve.
+pub fn set_fan_curve(name: &str) -> Result<(), String> {
     for hub in all() {
         let fans: Vec<u8> = hub.view().devices.iter().filter(|d| d.follows_fan_profile()).map(|d| d.channel_id).collect();
         if !fans.is_empty() {
@@ -148,13 +148,12 @@ pub fn set_fan_preset(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The preset every fan is on, or `None` when they differ or no fans are connected.
-pub fn active_fan_preset() -> Option<&'static str> {
+/// The curve every fan is on, or `None` when they differ or no fans are connected.
+pub fn common_fan_curve() -> Option<String> {
     let views = views();
     let mut fans = views.iter().flat_map(|h| &h.devices).filter(|d| d.follows_fan_profile());
-    let first = fans.next()?.speed_profile.as_str();
-    let preset = crate::temperatures::FAN_PRESETS.into_iter().find(|&p| p == first)?;
-    fans.all(|d| d.speed_profile == preset).then_some(preset)
+    let first = fans.next()?.speed_profile.clone();
+    fans.all(|d| d.speed_profile == first).then_some(first)
 }
 
 /// Re-render RGB on every hub (after an RGB profile edit).

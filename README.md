@@ -65,7 +65,10 @@ The installer:
 
 - **Open the dashboard:** double-click the tray icon, or use the Start menu. Starting OpenLinkHub again while it runs just brings the dashboard to the front.
 - **Close the dashboard:** OpenLinkHub keeps running in the tray, and the dashboard's memory is released.
-- **Switch profile:** the *Profile* switcher at the top of the dashboard, or right-click the tray icon. Quiet, Normal and Performance each put every fan on that curve (pumps keep their own) and remember their own lighting: whatever you change while a profile is active is saved with it, and comes back when you switch to it again. A profile you haven't used yet starts with your current lighting.
+- **Switch profile:** the *Profile* switcher at the top of the dashboard, or right-click the tray icon. A profile puts every fan on its curve (pumps keep their own) and remembers its own lighting: whatever you change while a profile is active is saved with it, and comes back when you switch to it again. A profile you haven't used yet starts with your current lighting.
+  - **Quiet, Normal and Performance** are always there. You can edit their curves on the *Fan curves* tab; *Reset to default* puts them back.
+  - **Custom profiles:** every curve you create on the *Fan curves* tab is also a profile. Pick it from the *Custom* dropdown next to the switcher, or from the tray menu.
+- **Fan speeds:** hover the fan button at the top right to see every fan's and pump's speed. Click it to keep it open; click again (or press Esc) to close it.
 - **Quit:** right-click the tray icon → *Quit*. The hub returns to its built-in (hardware) lighting and fan behaviour.
 
 The dashboard has four tabs:
@@ -73,7 +76,7 @@ The dashboard has four tabs:
 | Tab | What you can do |
 |---|---|
 | **Devices** | Live RPM, temperatures and duty for every device on each hub. Pick a fan curve and a lighting effect per device or for all at once, set brightness, turn lights off, give devices labels, set custom colors per device, choose what's connected to a LINK Adapter, and set up pump screens (**LCD** button). |
-| **Fan curves** | Built-in curves (Quiet, Normal, Performance, Liquid Temperature) plus your own. Drag points on the graph; a marker shows the live temperature. Curves can follow CPU, GPU, AIO coolant, a temperature probe, or a PSU. |
+| **Fan curves** | Built-in curves (Quiet, Normal, Performance, Liquid Temperature, PSU), which you can edit and reset, plus your own. Drag points on the graph; a marker shows the live temperature. Curves can follow CPU, GPU, AIO coolant, a temperature probe, or a PSU. |
 | **Lighting** | 27 effects (Static, Rainbow, Spiral Rainbow, Color Pulse, Color Shift, Wave, Rain, Nebula, Marquee, temperature-reactive, and more). Adjust speed and colors. |
 | **Settings** | Start with Windows, sensor status, the log viewer, and Quit. |
 

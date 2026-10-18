@@ -43,6 +43,9 @@ pub struct TemperatureProfile {
     pub device: String,
     #[serde(default, skip_deserializing)]
     pub builtin: bool,
+    /// A built-in curve the user has edited; `reset` puts the default back.
+    #[serde(default, skip_deserializing)]
+    pub modified: bool,
     #[serde(default, skip_serializing)]
     pub hidden: bool,
 }
@@ -80,6 +83,7 @@ fn from_bands(sensor: u8, zero_rpm: bool, bands: &[(f32, f32, f32, f32)]) -> Tem
         channel_id: 0,
         device: String::new(),
         builtin: true,
+        modified: false,
         hidden: false,
     }
 }
@@ -122,19 +126,30 @@ fn builtin_profiles() -> BTreeMap<String, TemperatureProfile> {
 
 fn store() -> &'static RwLock<BTreeMap<String, TemperatureProfile>> {
     static STORE: OnceLock<RwLock<BTreeMap<String, TemperatureProfile>>> = OnceLock::new();
-    STORE.get_or_init(|| {
-        let mut all = builtin_profiles();
-        let user: BTreeMap<String, TemperatureProfile> =
-            config::load_json(&config::path("temperatures.json")).unwrap_or_default();
-        for (name, profile) in user {
-            all.entry(name).or_insert(profile);
+    STORE.get_or_init(|| RwLock::new(merge(config::load_json(&config::path("temperatures.json")).unwrap_or_default())))
+}
+
+/// Built-in curves, with the user's edits to them and the user's own curves on top.
+fn merge(user: BTreeMap<String, TemperatureProfile>) -> BTreeMap<String, TemperatureProfile> {
+    let mut all = builtin_profiles();
+    for (name, mut profile) in user {
+        match all.get(&name) {
+            Some(existing) if existing.hidden => {}
+            Some(_) => {
+                profile.builtin = true;
+                profile.modified = true;
+                all.insert(name, profile);
+            }
+            None => {
+                all.insert(name, profile);
+            }
         }
-        RwLock::new(all)
-    })
+    }
+    all
 }
 
 fn persist(all: &BTreeMap<String, TemperatureProfile>) {
-    let user: BTreeMap<&String, &TemperatureProfile> = all.iter().filter(|(_, p)| !p.builtin).collect();
+    let user: BTreeMap<&String, &TemperatureProfile> = all.iter().filter(|(_, p)| !p.builtin || p.modified).collect();
     if let Err(e) = config::save_json(&config::path("temperatures.json"), &user) {
         log::error!("Unable to save temperature profiles: {e}");
     }
@@ -149,16 +164,23 @@ pub fn all() -> BTreeMap<String, TemperatureProfile> {
     store().read().unwrap().iter().filter(|(_, p)| !p.hidden).map(|(k, v)| (k.clone(), v.clone())).collect()
 }
 
-/// Create or replace a user profile. Built-in profiles are read-only.
+/// The user's own curves, which also act as profiles (see `crate::profiles`).
+pub fn custom_names() -> Vec<String> {
+    store().read().unwrap().iter().filter(|(_, p)| !p.builtin && !p.hidden).map(|(k, _)| k.clone()).collect()
+}
+
+/// Create or replace a curve. Editing a built-in curve keeps it built-in, and `reset`
+/// restores its default.
 pub fn upsert(name: &str, mut profile: TemperatureProfile) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() || name.len() > 64 {
         return Err("Profile name must be 1-64 characters".into());
     }
     let mut all = store().write().unwrap();
-    if all.get(name).is_some_and(|p| p.builtin) {
-        return Err("Built-in profiles can't be modified; save it under a new name".into());
+    if all.get(name).is_some_and(|p| p.hidden) {
+        return Err("That name is reserved".into());
     }
+    let builtin = all.get(name).is_some_and(|p| p.builtin);
     for pts in profile.points.values_mut() {
         pts.retain(|p| p.x.is_finite() && p.y.is_finite());
         for p in pts.iter_mut() {
@@ -170,9 +192,19 @@ pub fn upsert(name: &str, mut profile: TemperatureProfile) -> Result<(), String>
     if profile.pump_points().is_empty() || profile.fan_points().is_empty() {
         return Err("Profile needs at least one pump point and one fan point".into());
     }
-    profile.builtin = false;
+    profile.builtin = builtin;
+    profile.modified = builtin;
     profile.hidden = false;
     all.insert(name.to_string(), profile);
+    persist(&all);
+    Ok(())
+}
+
+/// Put a built-in curve back to its default.
+pub fn reset(name: &str) -> Result<(), String> {
+    let default = builtin_profiles().remove(name).filter(|p| !p.hidden).ok_or("Only built-in curves can be reset")?;
+    let mut all = store().write().unwrap();
+    all.insert(name.to_string(), default);
     persist(&all);
     Ok(())
 }
@@ -223,6 +255,26 @@ mod tests {
         assert_eq!(interpolate(&pts, 90.0), 60.0);
         assert_eq!(interpolate(&pts, 40.0), 40.0);
         assert_eq!(interpolate(&[], 40.0), 0.0);
+    }
+
+    #[test]
+    fn user_edits_layer_over_builtins() {
+        let mut quiet = builtin_profiles()["Quiet"].clone();
+        quiet.points.insert(1, vec![Point { x: 40.0, y: 25.0 }]);
+        let max = from_bands(SENSOR_LIQUID, false, &[(0.0, 100.0, 100.0, 100.0)]);
+        let critical = from_bands(SENSOR_CPU, true, &[(0.0, 100.0, 0.0, 0.0)]);
+        let all = merge(BTreeMap::from([
+            ("Quiet".to_string(), quiet),
+            ("MAX".to_string(), TemperatureProfile { builtin: false, ..max }),
+            (CRITICAL_PROFILE.to_string(), critical),
+        ]));
+        assert!(all["Quiet"].builtin && all["Quiet"].modified);
+        assert_eq!(all["Quiet"].fan_points()[0].y, 25.0);
+        assert!(!all["Normal"].modified);
+        assert!(!all["MAX"].builtin);
+        // The critical-temperature curve can never be replaced.
+        assert_eq!(all[CRITICAL_PROFILE].sensor, SENSOR_LIQUID);
+        assert!(all[CRITICAL_PROFILE].hidden);
     }
 
     #[test]

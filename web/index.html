@@ -31,6 +31,27 @@ header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, va
 .seg button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .seg button:disabled { cursor: default; opacity: .5; }
 .presets .custom { font-size: 12px; }
+.presets select { font-size: 13px; padding: 4px 8px; }
+.presets select.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.presets select option { background: var(--panel-2); color: var(--text); font-weight: 400; }
+.fanpop { position: relative; }
+.fanbtn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; cursor: pointer; }
+.fanbtn svg { width: 15px; height: 15px; color: var(--fan); }
+.fanbtn:hover, .fanpop.open .fanbtn { color: var(--text); border-color: var(--muted); }
+.fanpop.pinned .fanbtn { border-color: var(--accent); }
+.fanlist { display: none; position: absolute; right: 0; top: 100%; padding-top: 6px; z-index: 20; }
+.fanpop.open .fanlist { display: block; }
+.fanlist .panel { width: 360px; max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,.35); padding: 8px 12px 10px; }
+.fanlist .top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.fanlist .top b { font-size: 13px; }
+.fanlist h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 0 2px; font-weight: 600; }
+.fanrow { display: grid; grid-template-columns: 1fr auto 56px 34px; gap: 10px; align-items: center; padding: 3px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.fanrow .rpm, .fanrow .pct { text-align: right; }
+.fanrow .pct { color: var(--muted); font-size: 12px; }
+.fanrow .meter { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
+.fanrow .meter i { display: block; height: 100%; background: var(--fan); }
+.fanrow.pump .meter i { background: var(--pump); }
+.fanrow .kind { color: var(--muted); font-size: 11.5px; margin-left: 4px; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .chip b { color: var(--text); font-weight: 600; }
@@ -111,6 +132,13 @@ pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-he
     </div>
     <div class="presets" id="presets" role="radiogroup" aria-labelledby="presets-label"></div>
     <div class="chips" id="chips"></div>
+    <div class="fanpop" id="fanpop">
+      <button class="chip fanbtn" id="fanbtn" aria-expanded="false" aria-controls="fanlist"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.2" fill="currentColor"/><g fill="currentColor" opacity=".85"><path d="M12 9.6C11 5.5 12.6 2.8 15 3.2c.6 2.6-.8 5-3 6.4Z"/><path d="M14.4 12c4.1-1 6.8.6 6.4 3-2.6.6-5-.8-6.4-3Z"/><path d="M12 14.4c1 4.1-.6 6.8-3 6.4-.6-2.6.8-5 3-6.4Z"/><path d="M9.6 12C5.5 13 2.8 11.4 3.2 9c2.6-.6 5 .8 6.4 3Z"/></g></svg><b id="fanavg">—</b></button>
+      <div class="fanlist" id="fanlist"><div class="panel" role="region" aria-label="Fan speeds">
+        <div class="top"><b>Fan speeds</b><span class="hint" id="fanpin"></span></div>
+        <div id="fanlist-body"></div>
+      </div></div>
+    </div>
   </div>
   <nav role="tablist">
     <button role="tab" data-tab="devices" aria-selected="true">Devices</button>
@@ -219,6 +247,7 @@ async function poll() {
 
 function render() {
   renderPresets();
+  renderFans();
   renderChips();
   renderBanners();
   const sig = JSON.stringify([state.hubs.map(h => [h.serial, h.devices.map(d => [d.channelId, d.name, d.ledChannels, d.adapter, !!d.lcd])]),
@@ -228,7 +257,8 @@ function render() {
   updateCurveMarker();
 }
 
-// Profiles: each puts every fan (not pumps) on Quiet, Normal or Performance and remembers its own lighting.
+// Profiles: each puts every fan (not pumps) on one curve and remembers its own lighting. Quiet, Normal and
+// Performance always exist; curves made on the Fan curves tab are custom profiles in the dropdown.
 const PROFILE_HINT = "Switches every fan's curve (pumps keep theirs) and the lighting saved with the profile. Lighting changes are saved to the active profile.";
 let presetBusy = false;
 function renderPresets() {
@@ -237,25 +267,87 @@ function renderPresets() {
   if (!box.firstChild) {
     box.append(el("span", { id: "presets-label" }, "Profile"),
       el("div", { class: "seg" }, state.fanPresets.map(name => el("button", { role: "radio", "data-preset": name, onclick: () => setPreset(name) }, name))),
+      el("select", { "aria-label": "Custom profiles", title: "Custom profiles (make one on the Fan curves tab)", onchange: e => e.target.value && setPreset(e.target.value) }),
       el("span", { class: "custom hint" }));
   }
+  const off = !state.hubs.length || presetBusy;
   for (const b of box.querySelectorAll("button")) {
     b.setAttribute("aria-checked", b.dataset.preset === state.profile);
-    b.disabled = !state.hubs.length || presetBusy;
+    b.disabled = off;
   }
-  const customFans = hasFans && state.profile && state.fanPreset !== state.profile;
+  const sel = box.querySelector("select");
+  const customs = state.customProfiles;
+  const key = JSON.stringify(customs);
+  if (sel.dataset.key !== key && document.activeElement !== sel) {
+    sel.dataset.key = key;
+    sel.replaceChildren(el("option", { value: "", disabled: true }, "Custom…"), ...customs.map(n => el("option", { value: n }, n)));
+  }
+  const isCustom = customs.includes(state.profile);
+  const want = isCustom ? state.profile : "";
+  if (sel.value !== want) sel.value = want;
+  sel.classList.toggle("on", isCustom);
+  sel.hidden = !customs.length;
+  sel.disabled = off;
+  const customFans = hasFans && state.profile && state.fanCurve !== state.profile;
   const custom = box.querySelector(".custom");
   custom.textContent = customFans ? "Custom fans" : "";
   custom.title = customFans ? `Some fans aren't on the ${state.profile} curve. Click ${state.profile} to reset them.` : "";
   box.title = state.hubs.length ? PROFILE_HINT : "No iCUE LINK hub connected";
 }
 async function setPreset(name) {
-  if (presetBusy || (name === state.profile && state.fanPreset === name)) return;
+  if (presetBusy || (name === state.profile && state.fanCurve === name)) return;
   presetBusy = true; state.profile = name; renderPresets();
   if (await api("/api/profile", { name })) toast("Profile: " + name);
   presetBusy = false;
   const r = await fetch("/api/state", { cache: "no-store" }).catch(() => null);
   if (r) { state = await r.json(); render(); }
+}
+
+// Fan speeds button (top right): opens while hovered, click pins it open.
+let fansPinned = false;
+try { fansPinned = localStorage.getItem("fansPinned") === "1"; } catch {}
+{
+  const pop = $("#fanpop"), btn = $("#fanbtn");
+  let hover = false;
+  const sync = () => {
+    const open = fansPinned || hover;
+    pop.classList.toggle("open", open);
+    pop.classList.toggle("pinned", fansPinned);
+    btn.setAttribute("aria-expanded", open);
+    btn.title = fansPinned ? "Fan speeds (pinned open, click to unpin)" : "Fan speeds (click to keep open)";
+    $("#fanpin").textContent = fansPinned ? "Pinned · click the button to unpin" : "Click the button to keep open";
+  };
+  const pin = on => { fansPinned = on; try { localStorage.setItem("fansPinned", on ? "1" : "0"); } catch {} sync(); };
+  pop.addEventListener("mouseenter", () => { hover = true; sync(); });
+  pop.addEventListener("mouseleave", () => { hover = false; sync(); });
+  btn.addEventListener("click", () => pin(!fansPinned));
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && fansPinned) pin(false); });
+  sync();
+}
+
+function renderFans() {
+  const isFan = d => d.hasSpeed && !d.containsPump && !d.isPsu;
+  const fans = state.hubs.flatMap(h => h.devices.filter(isFan));
+  $("#fanavg").textContent = fans.length ? Math.round(fans.reduce((a, d) => a + d.rpm, 0) / fans.length) + " rpm" : "No fans";
+  $("#fanbtn").setAttribute("aria-label", "Fan speeds, average " + $("#fanavg").textContent);
+  const groups = state.hubs.map(h => {
+    const devs = h.devices.filter(d => isFan(d) || d.containsPump);
+    const total = {}, seen = {};
+    for (const d of devs) total[d.name] = (total[d.name] || 0) + 1;
+    const rows = devs.map(d => {
+      seen[d.name] = (seen[d.name] || 0) + 1;
+      const base = d.name.replace(/^iCUE LINK /, "");
+      const name = d.label || (total[d.name] > 1 ? `${base} ${seen[d.name]}` : base);
+      const pump = d.containsPump;
+      return el("div", { class: "fanrow" + (pump ? " pump" : "") },
+        el("span", {}, name, pump ? el("span", { class: "kind" }, "pump") : null),
+        el("span", { class: "rpm" }, d.rpm > 0 ? d.rpm + " rpm" : "stopped"),
+        el("span", { class: "meter", title: `${d.duty}% duty` }, el("i", { style: `width:${d.duty}%` })),
+        el("span", { class: "pct" }, d.duty + "%"));
+    });
+    return rows.length ? [el("h3", {}, `Hub ${shortSerial(h.serial)} · ${devs.length} device${devs.length === 1 ? "" : "s"}`), ...rows] : [];
+  }).flat();
+  $("#fanlist-body").replaceChildren(...(groups.length ? groups : [el("p", { class: "hint" }, "No fans found.")]));
 }
 
 function renderChips() {
@@ -474,7 +566,7 @@ function renderCurveList() {
   const list = $("#curve-list");
   list.replaceChildren(...Object.entries(state.speedProfiles).map(([name, p]) =>
     el("button", { "aria-current": name === curveName, onclick: () => { curveName = name; curveDraft = null; renderCurveList(); } },
-      el("span", {}, name), el("span", { class: "badge" }, p.builtin ? "built-in" : SENSORS[p.sensor]?.split(" ")[0] || "")) ),
+      el("span", {}, name), el("span", { class: "badge" }, p.builtin ? (p.modified ? "edited" : "built-in") : SENSORS[p.sensor]?.split(" ")[0] || "")) ),
     el("div", { style: "padding:6px" }, el("button", { class: "btn", style: "width:100%", onclick: () => newCurve() }, "+ New curve")));
   renderCurveEditor();
 }
@@ -510,30 +602,39 @@ function currentSensorTemp(p) {
 function renderCurveEditor() {
   const p = draft();
   const builtin = !!(curveName && state.speedProfiles[curveName]?.builtin);
+  const modified = builtin && !!state.speedProfiles[curveName]?.modified;
   const root = $("#curve-editor");
-  const sensorSel = el("select", { disabled: builtin, onchange: e => { p.sensor = +e.target.value; renderCurveEditor(); } },
+  const sensorSel = el("select", { onchange: e => { p.sensor = +e.target.value; renderCurveEditor(); } },
     Object.entries(SENSORS).map(([v, n]) => el("option", { value: v, selected: +v === p.sensor }, n)));
   const extra = [];
   if (p.sensor === 4) {
     const probes = state.hubs.flatMap(h => h.devices.filter(d => d.isProbe).map(d => ({ h, d })));
-    extra.push(el("label", {}, "Probe", el("select", { disabled: builtin, onchange: e => { const [s, c] = e.target.value.split("|"); p.device = s; p.channelId = +c; } },
+    extra.push(el("label", {}, "Probe", el("select", { onchange: e => { const [s, c] = e.target.value.split("|"); p.device = s; p.channelId = +c; } },
       probes.length ? probes.map(({ h, d }) => el("option", { value: `${h.serial}|${d.channelId}`, selected: p.device === h.serial && p.channelId === d.channelId }, `${d.label || d.name} (${shortSerial(h.serial)})`))
         : el("option", {}, "No probes found"))));
     if (probes.length && !p.device) { p.device = probes[0].h.serial; p.channelId = probes[0].d.channelId; }
   }
-  const zero = el("input", { type: "checkbox", disabled: builtin, onchange: e => p.zeroRpm = e.target.checked }); zero.checked = !!p.zeroRpm;
-  const nameInp = el("input", { type: "text", value: builtin ? curveName + " (copy)" : p.name, maxlength: 64 });
+  const zero = el("input", { type: "checkbox", onchange: e => p.zeroRpm = e.target.checked }); zero.checked = !!p.zeroRpm;
+  const nameInp = el("input", { type: "text", value: p.name, maxlength: 64 });
 
   const curveTabs = el("div", { class: "legend" },
     el("label", { class: "inline" }, el("input", { type: "radio", name: "curve", checked: activeCurve === 1, onchange: () => { activeCurve = 1; drawChart(); } }), el("i", { style: "background:var(--fan)" }), "Fans"),
     el("label", { class: "inline" }, el("input", { type: "radio", name: "curve", checked: activeCurve === 0, onchange: () => { activeCurve = 0; drawChart(); } }), el("i", { style: "background:var(--pump)" }), "Pump"),
     el("span", { class: "hint", id: "curve-now" }),
-    el("span", { class: "hint" }, builtin ? "Built-in curves are read-only — save a copy to edit." : "Drag points · click empty space to add · double-click a point to remove"));
+    el("span", { class: "hint" }, "Drag points · click empty space to add · double-click a point to remove"));
 
   const save = async () => {
     const name = nameInp.value.trim();
     const body = { sensor: p.sensor, zeroRpm: !!p.zeroRpm, points: p.points, channelId: p.channelId || 0, device: p.device || "" };
-    if (await api("/api/speedProfile", { name, profile: body })) { toast("Curve saved"); curveName = name; curveDraft = null; structure = ""; }
+    const isNew = !state.speedProfiles[name];
+    if (await api("/api/speedProfile", { name, profile: body })) {
+      toast(isNew ? `Curve saved. “${name}” is now a custom profile too` : "Curve saved");
+      curveName = name; curveDraft = null; structure = "";
+    }
+  };
+  const reset = async () => {
+    if (!confirm(`Put “${curveName}” back to its default curve? Lighting saved with the profile isn't changed.`)) return;
+    if (await api("/api/speedProfile/reset", { name: curveName })) { toast("Curve reset to default"); curveDraft = null; structure = ""; }
   };
   const del = async () => {
     if (!confirm(`Delete curve “${curveName}”?`)) return;
@@ -549,8 +650,12 @@ function renderCurveEditor() {
     curveTabs,
     el("div", { id: "chart-wrap" }),
     el("div", { class: "actions", style: "margin-top:12px" },
-      el("button", { class: "btn primary", onclick: save }, builtin ? "Save as new curve" : "Save"),
+      el("button", { class: "btn primary", onclick: save }, "Save"),
+      modified ? el("button", { class: "btn", onclick: reset }, "Reset to default") : null,
       !builtin && curveName ? el("button", { class: "btn danger", onclick: del }, "Delete") : null,
+      el("span", { class: "hint" }, builtin
+        ? "Built-in curve: edit it freely, it can't be deleted, and Reset to default puts it back. Rename it to save a copy instead. "
+        : "Custom curves are also profiles: pick them from the Profile dropdown at the top or the tray menu. "),
       el("span", { class: "hint" }, "Pump duty never drops below 50% on AIOs (31% on TITAN) and fans never below 20% unless zero RPM is on — the same safety floors as upstream.")));
   drawChart();
 }
@@ -562,7 +667,6 @@ const sy = d => CH.t + (1 - d / 100) * (CH.h - CH.t - CH.b);
 function drawChart() {
   const wrap = $("#chart-wrap"); if (!wrap) return;
   const p = draft();
-  const builtin = !!(curveName && state.speedProfiles[curveName]?.builtin);
   const NS = "http://www.w3.org/2000/svg";
   const s = (tag, a = {}) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(a)) e.setAttribute(k, v); return e; };
   const svg = s("svg", { viewBox: `0 0 ${CH.w} ${CH.h}`, class: "chart", role: "img", "aria-label": "Fan curve" });
@@ -587,24 +691,22 @@ function drawChart() {
     pts.forEach(pt => {
       const c = s("circle", { cx: sx(Math.min(pt.x, CH.tMax)), cy: sy(pt.y), r: 7, fill: color, stroke: "var(--panel)", "stroke-width": 2 });
       const tip = s("title"); tip.textContent = `${pt.x.toFixed(0)} °C → ${pt.y.toFixed(0)}%`; c.append(tip);
-      if (!builtin) {
-        c.addEventListener("pointerdown", ev => {
-          ev.preventDefault(); c.setPointerCapture(ev.pointerId);
-          const move = e => {
-            const r = svg.getBoundingClientRect(), k = CH.w / r.width;
-            pt.x = Math.round(Math.max(0, Math.min(CH.tMax, ((e.clientX - r.left) * k - CH.l) / (CH.w - CH.l - CH.r) * CH.tMax)));
-            pt.y = Math.round(Math.max(0, Math.min(100, (1 - ((e.clientY - r.top) * k - CH.t) / (CH.h - CH.t - CH.b)) * 100)));
-            p.points[which] = pts; drawChart();
-          };
-          c.addEventListener("pointermove", move);
-          c.addEventListener("pointerup", () => c.removeEventListener("pointermove", move), { once: true });
-        });
-        c.addEventListener("dblclick", ev => { ev.stopPropagation(); if (pts.length > 1) { pts.splice(pts.indexOf(pt), 1); p.points[which] = pts; drawChart(); } });
-      }
+      c.addEventListener("pointerdown", ev => {
+        ev.preventDefault(); c.setPointerCapture(ev.pointerId);
+        const move = e => {
+          const r = svg.getBoundingClientRect(), k = CH.w / r.width;
+          pt.x = Math.round(Math.max(0, Math.min(CH.tMax, ((e.clientX - r.left) * k - CH.l) / (CH.w - CH.l - CH.r) * CH.tMax)));
+          pt.y = Math.round(Math.max(0, Math.min(100, (1 - ((e.clientY - r.top) * k - CH.t) / (CH.h - CH.t - CH.b)) * 100)));
+          p.points[which] = pts; drawChart();
+        };
+        c.addEventListener("pointermove", move);
+        c.addEventListener("pointerup", () => c.removeEventListener("pointermove", move), { once: true });
+      });
+      c.addEventListener("dblclick", ev => { ev.stopPropagation(); if (pts.length > 1) { pts.splice(pts.indexOf(pt), 1); p.points[which] = pts; drawChart(); } });
       svg.append(c);
     });
   }
-  if (!builtin) svg.addEventListener("click", ev => {
+  svg.addEventListener("click", ev => {
     if (ev.target.tagName === "circle") return;
     const r = svg.getBoundingClientRect(), k = CH.w / r.width;
     const x = Math.round(((ev.clientX - r.left) * k - CH.l) / (CH.w - CH.l - CH.r) * CH.tMax);

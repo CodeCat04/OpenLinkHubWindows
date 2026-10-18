@@ -4,7 +4,8 @@
 //! in-process through a custom scheme. Instances coordinate through named Windows objects
 //! (a mutex and two events), so the app has no network listener of any kind.
 
-use crate::{hub, icon, profiles, server, temperatures};
+use crate::{hub, icon, profiles, server};
+use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -238,37 +239,48 @@ fn open_dashboard(target: &EventLoopWindowTarget<UserEvent>, context: &mut WebCo
     Some(Dashboard { webview, window })
 }
 
-/// Tray menu entries for the profile switcher, one per built-in preset.
-struct ProfileItems(Vec<(&'static str, CheckMenuItem)>);
+/// Tray menu entries for the profile switcher: Quiet, Normal, Performance, then custom
+/// profiles. Rebuilt when curves are added or deleted.
+struct ProfileItems {
+    menu: Menu,
+    /// Menu position of the first profile entry (after "Open dashboard", a separator and the heading).
+    first: usize,
+    items: RefCell<Vec<(String, CheckMenuItem)>>,
+}
 
 impl ProfileItems {
-    fn new() -> Self {
-        ProfileItems(temperatures::FAN_PRESETS.into_iter().map(|name| (name, CheckMenuItem::new(name, true, false, None))).collect())
-    }
-
-    fn preset_for(&self, id: &MenuId) -> Option<&'static str> {
-        self.0.iter().find(|(_, item)| item.id() == id).map(|(name, _)| *name)
+    fn profile_for(&self, id: &MenuId) -> Option<String> {
+        self.items.borrow().iter().find(|(_, item)| item.id() == id).map(|(name, _)| name.clone())
     }
 
     fn sync(&self) {
+        let names = profiles::names();
+        let mut items = self.items.borrow_mut();
+        if !items.iter().map(|(n, _)| n).eq(names.iter()) {
+            for (_, item) in items.drain(..) {
+                let _ = self.menu.remove(&item);
+            }
+            for (i, name) in names.into_iter().enumerate() {
+                // '&' marks a keyboard shortcut in Windows menus.
+                let item = CheckMenuItem::new(name.replace('&', "&&"), true, false, None);
+                let _ = self.menu.insert(&item, self.first + i);
+                items.push((name, item));
+            }
+        }
         let active = profiles::active();
-        for (name, item) in &self.0 {
-            item.set_checked(active.as_deref() == Some(*name));
+        for (name, item) in items.iter() {
+            item.set_checked(active.as_ref() == Some(name));
         }
     }
 }
 
-fn build_tray(autostart: &CheckMenuItem, open: &MenuItem, profiles: &ProfileItems, quit: &MenuItem) -> Option<TrayIcon> {
-    let menu = Menu::new();
+fn build_tray(menu: &Menu, autostart: &CheckMenuItem, open: &MenuItem, quit: &MenuItem) -> Option<TrayIcon> {
     let heading = MenuItem::new("Profile", false, None);
     let _ = menu.append_items(&[open, &PredefinedMenuItem::separator(), &heading]);
-    for (_, item) in &profiles.0 {
-        let _ = menu.append(item);
-    }
     let _ = menu.append_items(&[&PredefinedMenuItem::separator(), autostart, &PredefinedMenuItem::separator(), quit]);
     let (rgba, size) = icon::rgba(32);
     TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.clone()))
         .with_menu_on_left_click(false)
         .with_tooltip("OpenLinkHub")
         .with_icon(tray_icon::Icon::from_rgba(rgba, size, size).expect("valid icon"))
@@ -319,7 +331,8 @@ pub fn run(instance: Instance, show_dashboard: bool) -> ! {
     let open = MenuItem::new("Open dashboard", true, None);
     let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled(), None);
     let quit = MenuItem::new("Quit (return lighting to hardware mode)", true, None);
-    let profile_items = ProfileItems::new();
+    let menu = Menu::new();
+    let profile_items = ProfileItems { menu: menu.clone(), first: 3, items: RefCell::default() };
     let mut tray: Option<TrayIcon> = None;
     let mut dashboard: Option<Dashboard> = None;
     let _instance = instance;
@@ -328,7 +341,8 @@ pub fn run(instance: Instance, show_dashboard: bool) -> ! {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
-                tray = build_tray(&autostart, &open, &profile_items, &quit);
+                tray = build_tray(&menu, &autostart, &open, &quit);
+                profile_items.sync();
                 if show_dashboard {
                     dashboard = open_dashboard(target, &mut context);
                 }
@@ -351,8 +365,8 @@ pub fn run(instance: Instance, show_dashboard: bool) -> ! {
                         log::error!("Unable to change autostart: {err}");
                     }
                     autostart.set_checked(autostart_enabled());
-                } else if let Some(name) = profile_items.preset_for(&e.id) {
-                    if let Err(err) = profiles::switch(name) {
+                } else if let Some(name) = profile_items.profile_for(&e.id) {
+                    if let Err(err) = profiles::switch(&name) {
                         log::warn!("Unable to switch profile: {err}");
                     }
                     profile_items.sync();

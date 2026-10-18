@@ -72,7 +72,8 @@ fn state() -> Value {
         "sensors": sensors::snapshot(),
         "speedProfiles": temperatures::all(),
         "fanPresets": temperatures::FAN_PRESETS,
-        "fanPreset": manager::active_fan_preset(),
+        "customProfiles": profiles::custom(),
+        "fanCurve": manager::common_fan_curve(),
         "profile": profiles::active(),
         "rgbProfiles": rgb_profiles::all(),
         "rgbModes": RGB_MODES,
@@ -228,14 +229,23 @@ fn post(path: &str, body: Value) -> Result<(), String> {
         }
         "/api/speedProfile" => {
             let r: SpeedProfileRequest = parse(body)?;
-            temperatures::upsert(&r.name, r.profile)
+            temperatures::upsert(&r.name, r.profile)?;
+            app::profile_changed();
+            Ok(())
+        }
+        "/api/speedProfile/reset" => {
+            let r: NameRequest = parse(body)?;
+            temperatures::reset(&r.name)
         }
         "/api/speedProfile/delete" => {
             let r: NameRequest = parse(body)?;
             if manager::views().iter().flat_map(|h| &h.devices).any(|d| d.speed_profile == r.name) {
                 return Err("Profile is in use by a device; switch those devices first".into());
             }
-            temperatures::delete(&r.name)
+            temperatures::delete(&r.name)?;
+            profiles::forget(&r.name);
+            app::profile_changed();
+            Ok(())
         }
         "/api/rgbProfile" => {
             let r: RgbProfileRequest = parse(body)?;
