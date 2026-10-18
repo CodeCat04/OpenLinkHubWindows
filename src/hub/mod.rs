@@ -87,6 +87,46 @@ impl Default for HubProfile {
     }
 }
 
+/// The lighting part of a hub's settings, saved with each profile (see `crate::profiles`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lighting {
+    pub rgb_profiles: BTreeMap<u8, String>,
+    pub rgb_overrides: BTreeMap<u8, RgbOverride>,
+    pub sub_rgb_profiles: BTreeMap<u8, BTreeMap<u8, String>>,
+    pub brightness: u8,
+    pub rgb_off: bool,
+}
+
+impl Lighting {
+    fn capture(p: &HubProfile) -> Lighting {
+        Lighting {
+            rgb_profiles: p.rgb_profiles.clone(),
+            rgb_overrides: p.rgb_overrides.clone(),
+            sub_rgb_profiles: p.sub_rgb_profiles.clone(),
+            brightness: p.brightness,
+            rgb_off: p.rgb_off,
+        }
+    }
+
+    /// Replace every device's lighting. Channels missing from `self` go back to the defaults.
+    fn apply(&self, devices: &mut BTreeMap<u8, LinkDevice>, profile: &mut HubProfile) {
+        for d in devices.values_mut() {
+            d.rgb_profile = saved_rgb_profile(self.rgb_profiles.get(&d.channel_id));
+            d.rgb_override = self.rgb_overrides.get(&d.channel_id).cloned().unwrap_or_default();
+            let subs = self.sub_rgb_profiles.get(&d.channel_id);
+            for part in &mut d.sub_devices {
+                part.rgb_profile = saved_rgb_profile(subs.and_then(|m| m.get(&part.index)));
+            }
+        }
+        profile.rgb_profiles = self.rgb_profiles.clone();
+        profile.rgb_overrides = self.rgb_overrides.clone();
+        profile.sub_rgb_profiles = self.sub_rgb_profiles.clone();
+        profile.brightness = self.brightness.min(100);
+        profile.rgb_off = self.rgb_off;
+    }
+}
+
 /// An LCD panel as shown in the dashboard.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -844,6 +884,20 @@ impl Hub {
         self.rgb_generation.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn lighting(&self) -> Lighting {
+        Lighting::capture(&self.state.read().unwrap().profile)
+    }
+
+    pub fn apply_lighting(&self, l: &Lighting) {
+        {
+            let mut s = self.state.write().unwrap();
+            let HubState { devices, profile, .. } = &mut *s;
+            l.apply(devices, profile);
+        }
+        self.save_profile();
+        self.rgb_generation.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Re-render RGB after an RGB profile's colors or speed changed.
     pub fn refresh_rgb(&self) {
         self.rgb_generation.fetch_add(1, Ordering::Relaxed);
@@ -1019,12 +1073,7 @@ fn discover_devices(
                 .filter(|p| temperatures::get(p).is_some())
                 .cloned()
                 .unwrap_or_else(|| default_speed_profile(meta)),
-            rgb_profile: profile
-                .rgb_profiles
-                .get(&i)
-                .filter(|p| rgb_profiles::get(p).is_some())
-                .cloned()
-                .unwrap_or_else(|| "static".into()),
+            rgb_profile: saved_rgb_profile(profile.rgb_profiles.get(&i)),
             rgb_override: profile.rgb_overrides.get(&i).cloned().unwrap_or_default(),
             duty: DEFAULT_SPEED,
             ..LinkDevice::default()
@@ -1077,13 +1126,14 @@ fn adapter_parts(adapter: u32, saved: Option<&BTreeMap<u8, String>>) -> Vec<SubD
             index,
             name: part.name.clone(),
             led_channels: part.total,
-            rgb_profile: saved
-                .and_then(|m| m.get(&index))
-                .filter(|p| rgb_profiles::get(p).is_some())
-                .cloned()
-                .unwrap_or_else(|| "static".into()),
+            rgb_profile: saved_rgb_profile(saved.and_then(|m| m.get(&index))),
         })
         .collect()
+}
+
+/// A saved RGB profile name if it still exists, else the default (static).
+fn saved_rgb_profile(saved: Option<&String>) -> String {
+    saved.filter(|p| rgb_profiles::get(p).is_some()).cloned().unwrap_or_else(|| "static".into())
 }
 
 /// AIOs default to their own coolant sensor, which works without LibreHardwareMonitor.
@@ -1223,6 +1273,34 @@ fn duty_for(d: &LinkDevice, p: &TemperatureProfile, temp: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lighting_round_trips_and_resets_unsaved_channels() {
+        let quiet = HubProfile { brightness: 40, rgb_off: true, ..HubProfile::default() };
+        let saved = Lighting::capture(&quiet);
+
+        let mut profile = HubProfile::default();
+        profile.rgb_profiles.insert(1, "rainbow".into());
+        profile.rgb_overrides.insert(1, RgbOverride { enabled: true, ..RgbOverride::default() });
+        let part = SubDevice { index: 0, name: "strip".into(), led_channels: 10, rgb_profile: "wave".into() };
+        let mut devices = BTreeMap::from([
+            (1, LinkDevice { channel_id: 1, rgb_profile: "rainbow".into(), rgb_override: profile.rgb_overrides[&1].clone(), ..fan() }),
+            (2, LinkDevice { channel_id: 2, is_link_adapter: true, sub_devices: vec![part], ..LinkDevice::default() }),
+        ]);
+        let normal = Lighting::capture(&profile);
+
+        saved.apply(&mut devices, &mut profile);
+        assert_eq!(devices[&1].rgb_profile, "static");
+        assert!(!devices[&1].rgb_override.enabled);
+        assert_eq!(devices[&2].sub_devices[0].rgb_profile, "static");
+        assert_eq!((profile.brightness, profile.rgb_off), (40, true));
+        assert!(profile.rgb_profiles.is_empty());
+
+        normal.apply(&mut devices, &mut profile);
+        assert_eq!(devices[&1].rgb_profile, "rainbow");
+        assert!(devices[&1].rgb_override.enabled);
+        assert_eq!((profile.brightness, profile.rgb_off), (100, false));
+    }
 
     fn fan() -> LinkDevice {
         LinkDevice { has_speed: true, ..LinkDevice::default() }

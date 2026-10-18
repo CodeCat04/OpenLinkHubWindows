@@ -139,22 +139,12 @@ pub fn device_temperature(serial: &str, channel: u8) -> f32 {
 
 /// Put every fan on every hub on one of the built-in presets. Pumps keep their own curve.
 pub fn set_fan_preset(name: &str) -> Result<(), String> {
-    if !crate::temperatures::FAN_PRESETS.contains(&name) {
-        return Err(format!("Unknown fan profile '{name}'"));
-    }
-    let mut changed = false;
     for hub in all() {
         let fans: Vec<u8> = hub.view().devices.iter().filter(|d| d.follows_fan_profile()).map(|d| d.channel_id).collect();
         if !fans.is_empty() {
             hub.set_speed_profile(&fans, name)?;
-            changed = true;
         }
     }
-    if !changed {
-        return Err("No fans connected".into());
-    }
-    log::info!("Fan profile: {name}");
-    crate::app::fan_profile_changed();
     Ok(())
 }
 

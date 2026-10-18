@@ -60,6 +60,17 @@ pub fn update(name: &str, mut profile: Profile) -> Result<(), String> {
     config::save_json(&config::path("rgb.json"), &*all).map_err(|e| e.to_string())
 }
 
+/// Put back effect settings saved with a profile. Effects it doesn't mention are left alone.
+pub fn restore(saved: &BTreeMap<String, Profile>) -> Result<(), String> {
+    let mut all = store().write().unwrap();
+    for (name, profile) in saved {
+        if let Some(existing) = all.get_mut(name) {
+            *existing = profile.clone();
+        }
+    }
+    config::save_json(&config::path("rgb.json"), &*all).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

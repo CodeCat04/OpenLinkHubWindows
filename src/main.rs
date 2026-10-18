@@ -13,6 +13,7 @@ mod hub;
 mod icon;
 mod lcd;
 mod logging;
+mod profiles;
 mod rgb;
 mod rgb_profiles;
 mod sensors;

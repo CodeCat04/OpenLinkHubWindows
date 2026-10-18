@@ -222,13 +222,14 @@ function render() {
   renderChips();
   renderBanners();
   const sig = JSON.stringify([state.hubs.map(h => [h.serial, h.devices.map(d => [d.channelId, d.name, d.ledChannels, d.adapter, !!d.lcd])]),
-    Object.keys(state.speedProfiles), state.rgbModes]);
+    Object.keys(state.speedProfiles), state.rgbModes, state.profile]);
   if (sig !== structure) { structure = sig; buildHubs(); renderCurveList(); renderRgbList(); renderSettings(); }
   updateHubs();
   updateCurveMarker();
 }
 
-// Global fan profile: puts every fan (not pumps) on Quiet, Normal or Performance.
+// Profiles: each puts every fan (not pumps) on Quiet, Normal or Performance and remembers its own lighting.
+const PROFILE_HINT = "Switches every fan's curve (pumps keep theirs) and the lighting saved with the profile. Lighting changes are saved to the active profile.";
 let presetBusy = false;
 function renderPresets() {
   const box = $("#presets");
@@ -239,16 +240,19 @@ function renderPresets() {
       el("span", { class: "custom hint" }));
   }
   for (const b of box.querySelectorAll("button")) {
-    b.setAttribute("aria-checked", b.dataset.preset === state.fanPreset);
-    b.disabled = !hasFans || presetBusy;
+    b.setAttribute("aria-checked", b.dataset.preset === state.profile);
+    b.disabled = !state.hubs.length || presetBusy;
   }
-  box.querySelector(".custom").textContent = hasFans && !state.fanPreset ? "Custom" : "";
-  box.title = hasFans ? "Switches every fan. Pumps keep their own curve." : "No fans connected";
+  const customFans = hasFans && state.profile && state.fanPreset !== state.profile;
+  const custom = box.querySelector(".custom");
+  custom.textContent = customFans ? "Custom fans" : "";
+  custom.title = customFans ? `Some fans aren't on the ${state.profile} curve. Click ${state.profile} to reset them.` : "";
+  box.title = state.hubs.length ? PROFILE_HINT : "No iCUE LINK hub connected";
 }
 async function setPreset(name) {
-  if (presetBusy || name === state.fanPreset) return;
-  presetBusy = true; state.fanPreset = name; renderPresets();
-  if (await api("/api/fanPreset", { name })) toast("Fans: " + name);
+  if (presetBusy || (name === state.profile && state.fanPreset === name)) return;
+  presetBusy = true; state.profile = name; renderPresets();
+  if (await api("/api/profile", { name })) toast("Profile: " + name);
   presetBusy = false;
   const r = await fetch("/api/state", { cache: "no-store" }).catch(() => null);
   if (r) { state = await r.json(); render(); }
@@ -640,9 +644,9 @@ function renderRgbEditor() {
   const num = (k, label) => el("label", {}, label, el("input", { type: "number", min: 0, max: 120, value: p[k] ?? 0, onchange: e => p[k] = +e.target.value }));
   const save = async () => { if (await api("/api/rgbProfile", { name: rgbName, profile: p })) { toast("Effect saved"); } };
   const colorNote = "Leaving the start or end color black makes non-temperature effects use random colors.";
-  $("#rgb-editor").replaceChildren(
+  $("#rgb-editor").replaceChildren(...[
     el("h2", { style: "margin:0 0 4px;font-size:16px" }, RGB_NAMES[rgbName] || rgbName),
-    el("p", { class: "hint", style: "margin:0 0 14px" }, "Settings here apply to every device using this effect. For per-device colors, use the color swatch on the Devices tab."),
+    el("p", { class: "hint", style: "margin:0 0 14px" }, "Settings here apply to every device using this effect" + (state.profile ? ` and are saved with the ${state.profile} profile` : "") + ". For per-device colors, use the color swatch on the Devices tab."),
     el("div", { class: "form" },
       isTemp || isStatic ? null : el("label", {}, "Cycle time", el("span", { class: "row" }, speed, speedTxt)),
       hasColors ? el("label", {}, isTemp ? "Cold color" : isStatic ? "Color" : "Start color", picker("start")) : null,
@@ -651,7 +655,7 @@ function renderRgbEditor() {
       isTemp && rgbName !== "probe-temperature" ? num("minTemp", "Cold at (°C)") : null,
       isTemp && rgbName !== "probe-temperature" ? num("maxTemp", "Hot at (°C)") : null),
     hasColors && !isTemp && !isStatic ? el("p", { class: "hint" }, colorNote) : null,
-    el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Save")));
+    el("div", { class: "actions" }, el("button", { class: "btn primary", onclick: save }, "Save"))].filter(Boolean));
 }
 
 // ---------------------------------------------------------------- settings

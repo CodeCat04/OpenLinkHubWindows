@@ -65,7 +65,7 @@ The installer:
 
 - **Open the dashboard:** double-click the tray icon, or use the Start menu. Starting OpenLinkHub again while it runs just brings the dashboard to the front.
 - **Close the dashboard:** OpenLinkHub keeps running in the tray, and the dashboard's memory is released.
-- **Switch fan profile:** the *Profile* switcher at the top of the dashboard, or right-click the tray icon. It puts every fan on Quiet, Normal or Performance in one go. Pumps keep their own curve, and *Custom* shows when fans are on different curves.
+- **Switch profile:** the *Profile* switcher at the top of the dashboard, or right-click the tray icon. Quiet, Normal and Performance each put every fan on that curve (pumps keep their own) and remember their own lighting: whatever you change while a profile is active is saved with it, and comes back when you switch to it again. A profile you haven't used yet starts with your current lighting.
 - **Quit:** right-click the tray icon → *Quit*. The hub returns to its built-in (hardware) lighting and fan behaviour.
 
 The dashboard has four tabs:

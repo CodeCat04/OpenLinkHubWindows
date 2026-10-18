@@ -5,7 +5,7 @@
 use crate::hub::{manager, RgbOverride};
 use crate::rgb::{Profile, RGB_MODES};
 use crate::temperatures::{self, TemperatureProfile};
-use crate::{app, config, logging, rgb_profiles, sensors};
+use crate::{app, config, logging, profiles, rgb_profiles, sensors};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::borrow::Cow;
@@ -73,6 +73,7 @@ fn state() -> Value {
         "speedProfiles": temperatures::all(),
         "fanPresets": temperatures::FAN_PRESETS,
         "fanPreset": manager::active_fan_preset(),
+        "profile": profiles::active(),
         "rgbProfiles": rgb_profiles::all(),
         "rgbModes": RGB_MODES,
         "linkAdapters": crate::hub::adapters::choices(),
@@ -184,12 +185,12 @@ fn post(path: &str, body: Value) -> Result<(), String> {
         "/api/hub/speed" => {
             let r: ChannelsRequest = parse(body)?;
             hub(&r.serial)?.set_speed_profile(&r.channels, &r.profile)?;
-            app::fan_profile_changed();
+            app::profile_changed();
             Ok(())
         }
-        "/api/fanPreset" => {
+        "/api/profile" => {
             let r: NameRequest = parse(body)?;
-            manager::set_fan_preset(&r.name)
+            profiles::switch(&r.name)
         }
         "/api/hub/rgb" => {
             let r: ChannelsRequest = parse(body)?;
@@ -281,7 +282,7 @@ mod tests {
         assert!(std::str::from_utf8(page.body()).unwrap().contains("<title>OpenLinkHub</title>"));
         assert_eq!(handle(post_req("/api/quit", "{}", false)).status(), 403);
         assert_eq!(handle(post_req("/api/hub/rgb", "{bad", true)).status(), 400);
-        assert_eq!(handle(post_req("/api/fanPreset", r#"{"name":"Turbo"}"#, true)).status(), 400);
+        assert_eq!(handle(post_req("/api/profile", r#"{"name":"Turbo"}"#, true)).status(), 400);
         assert_eq!(handle(Request::get("http://olh.localhost/nope").body(Vec::new()).unwrap()).status(), 404);
     }
 }
