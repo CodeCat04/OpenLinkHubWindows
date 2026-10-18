@@ -14,8 +14,6 @@ pub const SENSOR_LIQUID: u8 = 2;
 pub const SENSOR_PROBE: u8 = 4;
 pub const SENSOR_CPU_GPU: u8 = 5;
 pub const SENSOR_PSU: u8 = 10;
-/// Any temperature sensor exposed by LibreHardwareMonitor, selected by its sensor id.
-pub const SENSOR_LHM: u8 = 12;
 
 pub const CRITICAL_PROFILE: &str = "aioCriticalTemperature";
 
@@ -41,9 +39,6 @@ pub struct TemperatureProfile {
     /// Hub serial the probe belongs to (sensor = Probe).
     #[serde(default)]
     pub device: String,
-    /// LibreHardwareMonitor sensor id (sensor = LibreHardwareMonitor).
-    #[serde(default)]
-    pub sensor_id: String,
     #[serde(default, skip_deserializing)]
     pub builtin: bool,
     #[serde(default, skip_serializing)]
@@ -82,7 +77,6 @@ fn from_bands(sensor: u8, zero_rpm: bool, bands: &[(f32, f32, f32, f32)]) -> Tem
         points: BTreeMap::from([(0, pump), (1, fans)]),
         channel_id: 0,
         device: String::new(),
-        sensor_id: String::new(),
         builtin: true,
         hidden: false,
     }

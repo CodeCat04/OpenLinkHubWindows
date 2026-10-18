@@ -4,9 +4,10 @@
 ;   iscc /DAppVersion=0.1.0 installer\OpenLinkHub.iss
 ; after `cargo build --release`. Output: dist\OpenLinkHub-Setup-<version>.exe
 ;
-; Installs per user (like VS Code or Discord), so no administrator prompt is needed:
-; %LOCALAPPDATA%\Programs\OpenLinkHub, Start menu shortcut, optional desktop shortcut,
-; optional start-with-Windows, and an entry in Settings > Apps for uninstalling.
+; Installs per user (like VS Code or Discord): %LOCALAPPDATA%\Programs\OpenLinkHub, Start
+; menu shortcut, optional desktop shortcut, optional start-with-Windows, and an entry in
+; Settings > Apps for uninstalling. The only step that needs administrator rights is the
+; optional CPU temperature sensor service, which is elevated on its own (one UAC prompt).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -47,10 +48,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "autostart"; Description: "Start OpenLinkHub automatically when I sign in (recommended)"
+Name: "cpusensor"; Description: "CPU temperature sensor (asks for administrator permission; needs the PawnIO driver)"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 Source: "..\target\release\OpenLinkHub.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\OpenLinkHubSensors.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
@@ -63,6 +66,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "OpenLinkHub"; Flags: deletevalue uninsdeletevalue; Tasks: not autostart
 
 [Run]
+; Registers the sensor service (copies it to Program Files and runs it as SYSTEM). This is
+; the only elevated step.
+Filename: "{app}\OpenLinkHubSensors.exe"; Parameters: "install"; Verb: "runas"; Flags: shellexec waituntilterminated runhidden; Tasks: cpusensor; StatusMsg: "Installing the CPU temperature sensor service..."
 Filename: "{app}\OpenLinkHub.exe"; Description: "Launch OpenLinkHub"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
@@ -81,11 +87,18 @@ begin
   Result := '';
 end;
 
-// Offer to remove settings (fan curves, lighting, logs) when uninstalling interactively.
+const
+  SensorServiceKey = 'SYSTEM\CurrentControlSet\Services\OpenLinkHubSensors';
+
+// Remove the sensor service (elevated) if it was installed, then offer to remove settings
+// (fan curves, lighting, logs) when uninstalling interactively.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
+  ResultCode: Integer;
 begin
+  if (CurUninstallStep = usUninstall) and RegKeyExists(HKLM, SensorServiceKey) then
+    ShellExec('runas', ExpandConstant('{app}\OpenLinkHubSensors.exe'), 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if CurUninstallStep = usPostUninstall then
   begin
     DataDir := ExpandConstant('{userappdata}\OpenLinkHub');

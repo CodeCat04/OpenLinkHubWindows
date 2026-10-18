@@ -50,6 +50,8 @@ button.danger { color: var(--bad); }
 .devices { display: grid; }
 .dev { display: grid; grid-template-columns: minmax(170px, 1.3fr) minmax(190px, 1.2fr) minmax(150px, 1fr) minmax(150px, 1fr) auto; gap: 10px 14px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
 .dev:first-child { border-top: 0; }
+.dev.sub { background: color-mix(in srgb, var(--panel-2) 45%, transparent); padding-top: 6px; padding-bottom: 6px; }
+.dev.sub .name { font-weight: 500; }
 .dev .name { font-weight: 600; }
 .dev .label { color: var(--muted); font-size: 12.5px; cursor: text; border-bottom: 1px dashed transparent; }
 .dev .label:hover { border-bottom-color: var(--muted); }
@@ -138,7 +140,7 @@ pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-he
 
 <script>
 "use strict";
-const SENSORS = { 0: "CPU", 1: "GPU", 2: "Liquid (AIO coolant)", 4: "Temperature probe", 5: "CPU + GPU (max)", 10: "PSU", 12: "LibreHardwareMonitor sensor" };
+const SENSORS = { 0: "CPU", 1: "GPU", 2: "Liquid (AIO coolant)", 4: "Temperature probe", 5: "CPU + GPU (max)", 10: "PSU" };
 const RGB_NAMES = { arc: "Arc", circle: "Circle", circleshift: "Circle Shift", colorpulse: "Color Pulse", colorshift: "Color Shift", colorwarp: "Color Warp",
   "cpu-temperature": "CPU Temperature", flickering: "Flickering", "gpu-temperature": "GPU Temperature", gradient: "Gradient", "liquid-temperature": "Liquid Temperature",
   marquee: "Marquee", nebula: "Nebula", off: "Off", "probe-temperature": "Probe Temperature", rain: "Rain", rainbow: "Rainbow", pastelrainbow: "Pastel Rainbow",
@@ -209,7 +211,7 @@ async function poll() {
 function render() {
   renderChips();
   renderBanners();
-  const sig = JSON.stringify([state.hubs.map(h => [h.serial, h.devices.map(d => [d.channelId, d.name, d.ledChannels])]),
+  const sig = JSON.stringify([state.hubs.map(h => [h.serial, h.devices.map(d => [d.channelId, d.name, d.ledChannels, d.adapter, !!d.lcd])]),
     Object.keys(state.speedProfiles), state.rgbModes]);
   if (sig !== structure) { structure = sig; buildHubs(); renderCurveList(); renderRgbList(); renderSettings(); }
   updateHubs();
@@ -219,7 +221,7 @@ function render() {
 function renderChips() {
   const s = state.sensors;
   const chips = [
-    el("span", { class: "chip", title: s.lhmAvailable ? "From LibreHardwareMonitor" : "Start LibreHardwareMonitor to read CPU temperature" }, "CPU ", el("b", {}, fmtTemp(s.cpu))),
+    el("span", { class: "chip", title: s.cpuStatus === "ok" ? "From the OpenLinkHub Sensors service" : "CPU temperature sensor: " + s.cpuStatus }, "CPU ", el("b", {}, fmtTemp(s.cpu))),
     el("span", { class: "chip" }, "GPU ", el("b", {}, fmtTemp(s.gpu))),
   ];
   for (const h of state.hubs) {
@@ -236,9 +238,12 @@ function renderBanners() {
       "Check the hub's USB cable, and make sure iCUE (and other RGB software like SignalRGB) is closed. Hubs are detected automatically within a few seconds."));
   }
   const usesCpu = state.hubs.some(h => h.devices.some(d => [0, 5].includes(state.speedProfiles[d.speedProfile]?.sensor)));
-  if (!state.sensors.lhmAvailable && usesCpu) {
-    out.push(el("div", { class: "banner" }, el("b", {}, "CPU temperature unavailable. "),
-      "Fans on CPU-based curves are running as if the CPU were at 50 °C. Run LibreHardwareMonitor as administrator with Options → Remote Web Server enabled (see the README), ",
+  if (state.sensors.cpuStatus !== "ok" && usesCpu) {
+    out.push(el("div", { class: "banner" }, el("b", {}, "CPU temperature unavailable "), `(sensor service: ${state.sensors.cpuStatus}). `,
+      "Fans on CPU-based curves are running as if the CPU were at 50 °C. ",
+      state.sensors.cpuStatus === "PawnIO driver not installed"
+        ? "Install the PawnIO driver (see Settings), "
+        : "Run the OpenLinkHub installer again and tick “CPU temperature sensor” (see Settings), ",
       "or switch fans to the “Liquid Temperature” curve."));
   }
   if (state.hubs.some(h => h.critical)) out.push(el("div", { class: "banner bad" }, el("b", {}, "AIO coolant is critically hot. "), "All fans and the pump are at 100% until it cools below 52 °C."));
@@ -273,7 +278,10 @@ function buildHubs() {
     off.checked = h.rgbOff;
 
     const devs = el("div", { class: "devices" });
-    for (const d of h.devices) devs.append(buildDevice(h, d));
+    for (const d of h.devices) {
+      devs.append(buildDevice(h, d));
+      if (d.isLinkAdapter) for (const part of d.subDevices) devs.append(buildAdapterPart(h, d, part));
+    }
 
     root.append(el("div", { class: "card", "data-serial": h.serial },
       el("div", { class: "card-head" },
@@ -306,21 +314,67 @@ function buildDevice(h, d) {
   const speedSel = canSpeed
     ? el("select", { "data-k": "speed", "aria-label": "Fan curve", onchange: e => api("/api/hub/speed", { serial: h.serial, channels: [d.channelId], profile: e.target.value }) }, speedOptions(d.speedProfile))
     : el("span", { class: "hint" }, d.isPsu ? "PSU curve" : "—");
-  const rgbSel = d.ledChannels > 0
+  const rgbSel = d.isLinkAdapter
+    ? el("select", { "aria-label": "Connected to this adapter", title: "What is connected to this LINK adapter", onchange: async e => {
+        const name = e.target.selectedOptions[0].textContent;
+        if (!confirm(`Set this LINK adapter to “${name}”?
+
+The hub's LED ports restart briefly. Make sure this matches what is physically connected.`)) {
+          e.target.value = d.adapter; return;
+        }
+        if (await api("/api/hub/adapter", { serial: h.serial, channel: d.channelId, adapter: +e.target.value })) toast("LINK adapter updated");
+        else e.target.value = d.adapter;
+      } }, state.linkAdapters.map(a => el("option", { value: a.index, selected: a.index === d.adapter }, a.index === 0 ? "Nothing connected" : a.name)))
+    : d.ledChannels > 0
     ? el("select", { "data-k": "rgb", "aria-label": "Lighting effect", onchange: e => api("/api/hub/rgb", { serial: h.serial, channels: [d.channelId], profile: e.target.value }) }, rgbOptions(d.rgbProfile))
     : el("span", { class: "hint" }, "No lighting");
 
   const row = el("div", { class: "dev", "data-ch": d.channelId });
   const ov = buildOverride(h, d);
+  const lcdPanel = d.lcd ? buildLcd(h, d) : null;
   const swatch = d.ledChannels > 0 ? el("button", { class: "swatch" + (d.rgbOverride.enabled ? " on" : ""), title: "Custom colors for this device", "aria-label": "Custom colors", onclick: () => ov.hidden = !ov.hidden }) : el("span");
-  row.append(
+  row.append(...[
     el("div", {}, el("div", { class: "name" }, d.name), labelEl),
     el("div", { class: "stats" },
       el("div", { class: "stat" }, el("small", {}, d.isPsu ? "Fan" : "Speed"), el("span", { "data-k": "rpm" }), el("div", { class: "duty" }, el("i", { "data-k": "duty" }))),
       el("div", { class: "stat" }, el("small", {}, d.aio ? "Coolant" : "Temp"), el("span", { "data-k": "temp" })),
       d.isPsu ? el("div", { class: "stat" }, el("small", {}, "Power"), el("span", { "data-k": "power" })) : null),
-    speedSel, rgbSel, swatch, ov);
+    speedSel, rgbSel,
+    el("div", { class: "row", style: "gap:6px;flex-wrap:nowrap" }, swatch,
+      lcdPanel ? el("button", { class: "btn", title: `${d.lcd.product} screen`, onclick: () => lcdPanel.hidden = !lcdPanel.hidden }, "LCD") : null),
+    ov, lcdPanel].filter(Boolean));
   return row;
+}
+
+// Screen settings for a pump with an LCD cap / XD5 / XC7 display.
+function buildLcd(h, d) {
+  const st = { ...d.lcd.settings };
+  const save = () => api("/api/hub/lcd", { serial: h.serial, channel: d.channelId, settings: st }).then(ok => ok && toast("Screen updated"));
+  const select = (key, items, label) => {
+    const sel = el("select", { "aria-label": label, onchange: e => { st[key] = key === "image" ? e.target.value : +e.target.value; imageRow.hidden = !usesImage(); save(); } },
+      items.map(i => el("option", { value: i.id, selected: i.id === st[key] }, i.name)));
+    return el("label", { class: "inline" }, label, sel);
+  };
+  const usesImage = () => st.mode === 10 || st.mode === 102;
+  const images = state.lcd.images.map(n => ({ id: n, name: n }));
+  const imageRow = el("span", { class: "row", hidden: !usesImage() },
+    images.length ? select("image", [{ id: "", name: "(first image)" }, ...images], "Image") : null,
+    el("span", { class: "hint" }, images.length ? "" : "Put JPG, PNG, GIF, BMP or WebP files in %APPDATA%\\OpenLinkHub\\lcd, then reopen this panel."));
+  return el("div", { class: "override", hidden: true },
+    el("b", {}, d.lcd.product),
+    select("mode", state.lcd.modes, "Screen"),
+    select("rotation", state.lcd.rotations, "Rotation"),
+    select("brightness", state.lcd.brightness, "Brightness"),
+    imageRow);
+}
+
+// One strip or fan behind a LINK adapter: its own lighting effect.
+function buildAdapterPart(h, d, part) {
+  return el("div", { class: "dev sub", "data-ch": d.channelId, "data-part": part.index },
+    el("div", {}, el("div", { class: "name" }, "↳ " + part.name), el("div", { class: "label" }, `${part.ledChannels} LEDs via LINK adapter`)),
+    el("div"), el("div"),
+    el("select", { "data-k": "subrgb", "aria-label": "Lighting effect", onchange: e => api("/api/hub/subRgb", { serial: h.serial, channel: d.channelId, part: part.index, profile: e.target.value }) }, rgbOptions(part.rgbProfile)),
+    el("span"));
 }
 
 function hexOf(c) { return "#" + [c.red, c.green, c.blue].map(v => Math.max(0, Math.min(255, Math.round(v || 0))).toString(16).padStart(2, "0")).join(""); }
@@ -353,7 +407,7 @@ function updateHubs() {
     $('[data-k="brightnessText"]', card).textContent = h.brightness + "%";
     const off = $('[data-k="rgbOff"]', card); if (document.activeElement !== off) off.checked = h.rgbOff;
     for (const d of h.devices) {
-      const row = $(`.dev[data-ch="${d.channelId}"]`, card);
+      const row = $(`.dev:not(.sub)[data-ch="${d.channelId}"]`, card);
       if (!row) continue;
       $('[data-k="rpm"]', row).textContent = d.hasSpeed || d.containsPump || d.isPsu ? `${d.rpm} rpm` : "—";
       $('[data-k="duty"]', row).style.width = (d.hasSpeed || d.containsPump ? d.duty : 0) + "%";
@@ -362,6 +416,10 @@ function updateHubs() {
       const p = $('[data-k="power"]', row); if (p) p.textContent = d.powerOut ? d.powerOut.toFixed(0) + " W" : "—";
       const sp = $('[data-k="speed"]', row); if (sp && document.activeElement !== sp) sp.value = d.speedProfile;
       const rg = $('[data-k="rgb"]', row); if (rg && document.activeElement !== rg) rg.value = d.rgbProfile;
+      for (const part of d.subDevices || []) {
+        const sr = $(`.dev.sub[data-ch="${d.channelId}"][data-part="${part.index}"] [data-k="subrgb"]`, card);
+        if (sr && document.activeElement !== sr) sr.value = part.rgbProfile;
+      }
       $(".swatch", row)?.classList.toggle("on", !!d.rgbOverride.enabled);
     }
   }
@@ -384,7 +442,7 @@ function renderCurveList() {
 function newCurve() {
   let n = 1; while (state.speedProfiles["Custom " + n]) n++;
   curveName = null;
-  curveDraft = { name: "Custom " + n, sensor: 2, zeroRpm: false, channelId: 0, device: "", sensorId: "",
+  curveDraft = { name: "Custom " + n, sensor: 2, zeroRpm: false, channelId: 0, device: "",
     points: { 0: [{ x: 25, y: 50 }, { x: 35, y: 70 }, { x: 45, y: 100 }], 1: [{ x: 25, y: 30 }, { x: 35, y: 50 }, { x: 45, y: 100 }] } };
   renderCurveList();
 }
@@ -405,7 +463,6 @@ function currentSensorTemp(p) {
     case 2: { for (const h of state.hubs) { const a = h.devices.find(d => d.aio || d.containsPump); if (a) return a.temperature; } return 0; }
     case 10: { for (const h of state.hubs) { const a = h.devices.find(d => d.isPsu); if (a) return a.temperature; } return 0; }
     case 4: { const h = state.hubs.find(h => h.serial === p.device) || state.hubs[0]; return h?.devices.find(d => d.channelId === p.channelId)?.temperature || 0; }
-    case 12: return s.sensors.find(x => x.id === p.sensorId)?.value || 0;
   }
   return 0;
 }
@@ -424,12 +481,6 @@ function renderCurveEditor() {
         : el("option", {}, "No probes found"))));
     if (probes.length && !p.device) { p.device = probes[0].h.serial; p.channelId = probes[0].d.channelId; }
   }
-  if (p.sensor === 12) {
-    const list = state.sensors.sensors;
-    extra.push(el("label", {}, "Sensor", el("select", { disabled: builtin, onchange: e => p.sensorId = e.target.value },
-      list.length ? list.map(s => el("option", { value: s.id, selected: s.id === p.sensorId }, `${s.hardware.split("|")[1]} · ${s.name}`)) : el("option", {}, "LibreHardwareMonitor not running"))));
-    if (list.length && !p.sensorId) p.sensorId = list[0].id;
-  }
   const zero = el("input", { type: "checkbox", disabled: builtin, onchange: e => p.zeroRpm = e.target.checked }); zero.checked = !!p.zeroRpm;
   const nameInp = el("input", { type: "text", value: builtin ? curveName + " (copy)" : p.name, maxlength: 64 });
 
@@ -441,7 +492,7 @@ function renderCurveEditor() {
 
   const save = async () => {
     const name = nameInp.value.trim();
-    const body = { sensor: p.sensor, zeroRpm: !!p.zeroRpm, points: p.points, channelId: p.channelId || 0, device: p.device || "", sensorId: p.sensorId || "" };
+    const body = { sensor: p.sensor, zeroRpm: !!p.zeroRpm, points: p.points, channelId: p.channelId || 0, device: p.device || "" };
     if (await api("/api/speedProfile", { name, profile: body })) { toast("Curve saved"); curveName = name; curveDraft = null; structure = ""; }
   };
   const del = async () => {
@@ -575,21 +626,24 @@ function renderSettings() {
     c.checked = !!s[key];
     return el("div", {}, el("label", { class: "inline", style: "color:var(--text)" }, c, label), hint ? el("div", { class: "hint", style: "margin-left:24px" }, hint) : null);
   };
-  const lhm = el("input", { type: "url", value: s.lhmUrl, style: "flex:1;min-width:240px" });
   $("#settings").replaceChildren(
     toggle("autostart", "Start with Windows", "Runs in the tray at sign-in. No administrator rights needed."),
-    toggle("openBrowser", "Open this dashboard when OpenLinkHub starts manually"),
+    toggle("openDashboard", "Open this dashboard when OpenLinkHub is started from the Start menu"),
     el("div", {},
-      el("div", { style: "margin-bottom:6px" }, "LibreHardwareMonitor URL ", el("span", { class: "hint" }, state.sensors.lhmAvailable ? "· connected" : "· not reachable")),
-      el("div", { class: "row" }, lhm, el("button", { class: "btn", onclick: async () => { if (await api("/api/settings", { lhmUrl: lhm.value })) toast("Saved"); } }, "Save")),
-      el("div", { class: "hint", style: "margin-top:6px" }, "Needed for CPU temperature on Windows. In LibreHardwareMonitor: run as administrator, then Options → Remote Web Server → Run. Also tick Options → Start Minimized and Run On Windows Startup.")),
+      el("div", { style: "margin-bottom:6px" }, "CPU temperature sensor ", el("span", { class: "hint" }, "· " + state.sensors.cpuStatus)),
+      el("div", { class: "hint" }, state.sensors.cpuStatus === "ok"
+        ? "Provided by the OpenLinkHub Sensors service through the PawnIO driver."
+        : "Windows only lets kernel drivers read CPU temperature. Install the PawnIO driver from an administrator PowerShell with “winget install namazso.PawnIO”, then run the OpenLinkHub installer again with “CPU temperature sensor” ticked. See the README for details.")),
+    el("div", {},
+      el("div", { style: "margin-bottom:6px" }, "GPU temperature ", el("span", { class: "hint" }, state.sensors.nvidia ? "· NVIDIA GPU detected" : "· no NVIDIA GPU detected")),
+      el("div", { class: "hint" }, "Read from the NVIDIA driver. Other GPUs aren't supported; GPU-based curves then follow the CPU temperature.")),
     el("div", { class: "hint" }, `Settings and profiles are stored in ${s.dataDir}. ${s.installed ? "Installed for this user — uninstall from Settings → Apps." : "Running without installing."}`),
     el("div", { class: "actions" }, el("button", { class: "btn danger", onclick: async () => {
       if (confirm("Quit OpenLinkHub? Lighting and fans return to the hub's built-in (hardware) mode.") && await api("/api/quit")) {
-        document.body.replaceChildren(el("div", { class: "empty" }, "OpenLinkHub has stopped. Start it again from the Start menu."));
+        document.body.replaceChildren(el("div", { class: "empty" }, "OpenLinkHub is stopping…"));
       }
     } }, "Quit OpenLinkHub")),
-    el("div", { class: "hint" }, `Version ${state.version} · Runs entirely offline: it only talks to your hubs and, if enabled, LibreHardwareMonitor on this PC. · `,
+    el("div", { class: "hint" }, `Version ${state.version} · Runs entirely offline: no network access of any kind. · `,
       el("a", { href: "https://github.com/CodeCat04/OpenLinkHubWindows", target: "_blank", rel: "noopener noreferrer" }, "Source code & help")));
 }
 

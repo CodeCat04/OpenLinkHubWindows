@@ -1,38 +1,43 @@
-//! Host temperature sensors on Windows.
+//! Host sensors: CPU/GPU temperature and load. No network, no child processes.
 //!
-//! Windows has no unprivileged CPU temperature API, so CPU/GPU readings come from
-//! LibreHardwareMonitor's "Remote Web Server" (`data.json`), which ships its own driver.
-//! GPU falls back to `nvidia-smi` when LHM isn't running. Readings refresh every 2 s.
+//! - CPU temperature: published by the OpenLinkHub Sensors service (see `sensors/`), which
+//!   reads it through the PawnIO driver. Windows only lets kernel drivers read it.
+//! - CPU load: `GetSystemTimes`.
+//! - NVIDIA GPU temperature and load: NVML (`nvml.dll`, installed with the NVIDIA driver).
+//!
+//! Everything refreshes every 2 s on one background thread.
 
-use crate::config;
+#[path = "../sensors/shared.rs"]
+mod shared;
+
 use serde::Serialize;
-use serde_json::Value;
-use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::ffi::{c_void, OsStr};
+use std::os::windows::ffi::OsStrExt;
 use std::sync::{OnceLock, RwLock};
 use std::thread;
 use std::time::Duration;
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS};
+use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+use windows_sys::Win32::System::Threading::GetSystemTimes;
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Sensor {
-    pub id: String,
-    pub hardware: String,
-    pub name: String,
-    pub value: f32,
-}
+/// A service reading older than this is considered stale (service stopped).
+const STALE_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub cpu: f32,
     pub gpu: f32,
-    pub lhm_available: bool,
-    pub nvidia_smi: bool,
-    pub sensors: Vec<Sensor>,
+    pub cpu_load: f32,
+    pub gpu_load: f32,
+    /// The sensor service is installed and running.
+    pub cpu_service: bool,
+    /// Human-readable CPU sensor state, e.g. "ok" or "PawnIO driver not installed".
+    pub cpu_status: String,
+    pub nvidia: bool,
 }
 
 fn snapshot_lock() -> &'static RwLock<Snapshot> {
@@ -52,166 +57,191 @@ pub fn gpu() -> f32 {
     snapshot_lock().read().unwrap().gpu
 }
 
-/// Temperature of a LibreHardwareMonitor sensor by id, or 0 when unavailable.
-pub fn by_id(id: &str) -> f32 {
-    snapshot_lock().read().unwrap().sensors.iter().find(|s| s.id == id).map_or(0.0, |s| s.value)
-}
-
 pub fn start() {
-    refresh();
     thread::Builder::new()
         .name("sensors".into())
-        .spawn(|| loop {
-            thread::sleep(POLL_INTERVAL);
-            refresh();
+        .spawn(|| {
+            let mut cpu_reader = CpuReader::default();
+            let mut load = CpuLoad::default();
+            let nvml = Nvml::load();
+            let mut logged = String::new();
+            loop {
+                let mut snap = Snapshot { cpu_status: "not installed".into(), ..Snapshot::default() };
+                if let Some(s) = cpu_reader.read() {
+                    snap.cpu_service = true;
+                    snap.cpu_status = shared::status_text(s.status).into();
+                    if s.status == shared::STATUS_OK {
+                        snap.cpu = s.cpu_temp;
+                    }
+                }
+                if snap.cpu_status != logged {
+                    match snap.cpu_status.as_str() {
+                        "ok" => log::info!("CPU temperature available from the sensor service"),
+                        status => log::warn!("CPU temperature unavailable: sensor service {status}. Fan curves using CPU assume 50 °C."),
+                    }
+                    logged = snap.cpu_status.clone();
+                }
+                snap.cpu_load = load.sample();
+                if let Some(n) = &nvml {
+                    snap.nvidia = true;
+                    (snap.gpu, snap.gpu_load) = n.read();
+                }
+                *snapshot_lock().write().unwrap() = snap;
+                thread::sleep(POLL_INTERVAL);
+            }
         })
         .expect("spawn sensors thread");
 }
 
-fn refresh() {
-    let mut snap = Snapshot::default();
-    let mut warned = WARNED.get_or_init(|| RwLock::new(false)).write().unwrap();
+fn wide(s: &str) -> Vec<u16> {
+    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
 
-    let url = config::get().lhm_url;
-    let fetched = if config::is_loopback_url(&url) {
-        fetch_lhm(&url)
-    } else {
-        Err("URL is not a local (127.0.0.1 / localhost) address, so it is never contacted".into())
-    };
-    match fetched {
-        Ok(root) => {
-            snap.lhm_available = true;
-            collect(&root, None, &mut snap.sensors);
-            snap.cpu = pick_cpu(&snap.sensors);
-            snap.gpu = pick_gpu(&snap.sensors);
-            *warned = false;
+/// Reads the service's shared memory, reopening it if the service restarts.
+#[derive(Default)]
+struct CpuReader {
+    mapping: Option<(HANDLE, *const shared::Shared)>,
+}
+
+// The view is only read through volatile copies from this one thread.
+unsafe impl Send for CpuReader {}
+
+impl CpuReader {
+    fn open(&mut self) -> bool {
+        let name = wide(shared::MAPPING_NAME);
+        let h = unsafe { OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr()) };
+        if h.is_null() {
+            return false;
         }
-        Err(e) => {
-            if !*warned {
-                log::warn!(
-                    "LibreHardwareMonitor not reachable ({e}). CPU temperature is unavailable; \
-                     fan curves using CPU will assume 50 °C. See README for setup."
-                );
-                *warned = true;
+        let view: MEMORY_MAPPED_VIEW_ADDRESS = unsafe { MapViewOfFile(h, FILE_MAP_READ, 0, 0, size_of::<shared::Shared>()) };
+        if view.Value.is_null() {
+            unsafe { CloseHandle(h) };
+            return false;
+        }
+        self.mapping = Some((h, view.Value as *const shared::Shared));
+        true
+    }
+
+    fn close(&mut self) {
+        if let Some((h, view)) = self.mapping.take() {
+            unsafe {
+                UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: view as *mut c_void });
+                CloseHandle(h);
             }
         }
     }
 
-    if snap.gpu == 0.0 {
-        if let Some(t) = nvidia_smi_temp() {
-            snap.gpu = t;
-            snap.nvidia_smi = true;
+    fn read(&mut self) -> Option<shared::Shared> {
+        if self.mapping.is_none() && !self.open() {
+            return None;
+        }
+        let (_, view) = self.mapping?;
+        for _ in 0..4 {
+            use std::sync::atomic::{fence, Ordering};
+            let s1 = unsafe { std::ptr::read_volatile(&(*view).seq) };
+            fence(Ordering::Acquire);
+            let data = unsafe { std::ptr::read_volatile(view) };
+            fence(Ordering::Acquire);
+            let s2 = unsafe { std::ptr::read_volatile(&(*view).seq) };
+            if s1 != s2 || s1 & 1 == 1 {
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            if data.magic != shared::MAGIC || data.version != shared::VERSION {
+                return None;
+            }
+            if unsafe { GetTickCount64() }.saturating_sub(data.updated_tick_ms) > STALE_MS && data.status != shared::STATUS_NO_PAWNIO {
+                // Service stopped or restarted with a new block; reopen next time.
+                self.close();
+                return None;
+            }
+            return Some(data);
+        }
+        None
+    }
+}
+
+/// Whole-system CPU utilisation from successive `GetSystemTimes` samples.
+#[derive(Default)]
+struct CpuLoad {
+    last: Option<(u64, u64)>,
+}
+
+impl CpuLoad {
+    fn sample(&mut self) -> f32 {
+        let ft = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+        let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
+        if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+            return 0.0;
+        }
+        // Kernel time includes idle time.
+        let (busy_total, idle) = (ft(kernel) + ft(user), ft(idle));
+        let load = match self.last {
+            Some((prev_total, prev_idle)) if busy_total > prev_total => {
+                let total = (busy_total - prev_total) as f64;
+                let idle = idle.saturating_sub(prev_idle) as f64;
+                ((1.0 - idle / total) * 100.0).clamp(0.0, 100.0) as f32
+            }
+            _ => 0.0,
+        };
+        self.last = Some((busy_total, idle));
+        load
+    }
+}
+
+type NvmlInit = unsafe extern "C" fn() -> i32;
+type NvmlHandleByIndex = unsafe extern "C" fn(u32, *mut *mut c_void) -> i32;
+type NvmlGetTemperature = unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32;
+type NvmlGetUtilization = unsafe extern "C" fn(*mut c_void, *mut [u32; 2]) -> i32;
+type Farproc = unsafe extern "system" fn() -> isize;
+
+/// Minimal NVML binding for GPU 0, loaded at runtime so non-NVIDIA systems just skip it.
+struct Nvml {
+    device: *mut c_void,
+    get_temperature: NvmlGetTemperature,
+    get_utilization: NvmlGetUtilization,
+}
+
+unsafe impl Send for Nvml {}
+
+impl Nvml {
+    fn load() -> Option<Nvml> {
+        let lib = unsafe { LoadLibraryW(wide("nvml.dll").as_ptr()) };
+        if lib.is_null() {
+            return None;
+        }
+        unsafe {
+            let sym = |name: &[u8]| GetProcAddress(lib, name.as_ptr());
+            // NVML exports use the C ABI, which is the same as "system" on x86-64.
+            let init = std::mem::transmute::<Farproc, NvmlInit>(sym(b"nvmlInit_v2\0")?);
+            let by_index = std::mem::transmute::<Farproc, NvmlHandleByIndex>(sym(b"nvmlDeviceGetHandleByIndex_v2\0")?);
+            let get_temperature = std::mem::transmute::<Farproc, NvmlGetTemperature>(sym(b"nvmlDeviceGetTemperature\0")?);
+            let get_utilization = std::mem::transmute::<Farproc, NvmlGetUtilization>(sym(b"nvmlDeviceGetUtilizationRates\0")?);
+            if init() != 0 {
+                return None;
+            }
+            let mut device = std::ptr::null_mut();
+            if by_index(0, &mut device) != 0 {
+                return None;
+            }
+            log::info!("NVIDIA GPU sensors available");
+            Some(Nvml { device, get_temperature, get_utilization })
         }
     }
-    *snapshot_lock().write().unwrap() = snap;
-}
 
-static WARNED: OnceLock<RwLock<bool>> = OnceLock::new();
-
-fn fetch_lhm(url: &str) -> Result<Value, String> {
-    // No redirects: a local service must not be able to bounce us to another host.
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(800)).redirects(0).build();
-    agent.get(url).call().map_err(|e| e.to_string())?.into_json::<Value>().map_err(|e| e.to_string())
-}
-
-/// Walk the LHM tree collecting temperature sensors. The hardware name is the nearest
-/// ancestor node with a device icon (cpu.png, nvidia.png, ...). The top-level computer-name
-/// node is skipped so the machine name never reaches the UI or logs.
-fn collect(node: &Value, hardware: Option<(&str, &str)>, out: &mut Vec<Sensor>) {
-    let text = node.get("Text").and_then(Value::as_str).unwrap_or("");
-    let image = node.get("ImageURL").and_then(Value::as_str).unwrap_or("");
-    let is_hardware = !image.is_empty()
-        && !image.contains("computer")
-        && !image.contains("temperature")
-        && !image.contains("transparent")
-        && node.get("Value").and_then(Value::as_str).is_none_or(str::is_empty);
-    let hw = if is_hardware && is_device_icon(image) { Some((text, image)) } else { hardware };
-
-    if let Some(value) = node.get("Value").and_then(Value::as_str) {
-        let kind = node.get("Type").and_then(Value::as_str).unwrap_or("");
-        let is_temp = kind == "Temperature" || value.contains('°');
-        if is_temp {
-            if let (Some(v), Some((hw_name, hw_image))) = (parse_celsius(value), hw) {
-                let id = node
-                    .get("SensorId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("{hw_name}/{text}"));
-                out.push(Sensor { id, hardware: format!("{}|{hw_name}", icon_kind(hw_image)), name: text.to_string(), value: v });
+    /// (temperature °C, utilisation %)
+    fn read(&self) -> (f32, f32) {
+        let (mut temp, mut util) = (0u32, [0u32; 2]);
+        unsafe {
+            if (self.get_temperature)(self.device, 0, &mut temp) != 0 {
+                temp = 0;
+            }
+            if (self.get_utilization)(self.device, &mut util) != 0 {
+                util = [0, 0];
             }
         }
+        (temp as f32, util[0] as f32)
     }
-    if let Some(children) = node.get("Children").and_then(Value::as_array) {
-        for child in children {
-            collect(child, hw, out);
-        }
-    }
-}
-
-fn is_device_icon(image: &str) -> bool {
-    ["cpu", "nvidia", "ati", "amd", "intel", "gpu", "hdd", "nic", "mainboard", "chip", "ram", "battery", "psu", "fan", "water"]
-        .iter()
-        .any(|k| image.contains(k))
-}
-
-fn icon_kind(image: &str) -> &'static str {
-    if image.contains("cpu") {
-        "cpu"
-    } else if image.contains("nvidia") || image.contains("ati") || image.contains("amd") || image.contains("gpu") {
-        "gpu"
-    } else if image.contains("intel") {
-        "igpu"
-    } else {
-        "other"
-    }
-}
-
-/// Parse "45.3 °C", "45,3 °C" (locale decimal comma) or "113.5 °F".
-fn parse_celsius(s: &str) -> Option<f32> {
-    let num: String = s
-        .trim()
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',' || *c == '-')
-        .map(|c| if c == ',' { '.' } else { c })
-        .collect();
-    let v: f32 = num.parse().ok()?;
-    let c = if s.contains("°F") { (v - 32.0) * 5.0 / 9.0 } else { v };
-    (c.is_finite() && c > 0.0 && c < 150.0).then_some(c)
-}
-
-fn pick(sensors: &[Sensor], kind: &str, preferred: &[&str]) -> f32 {
-    let of_kind: Vec<&Sensor> = sensors.iter().filter(|s| s.hardware.starts_with(kind)).collect();
-    for name in preferred {
-        if let Some(s) = of_kind.iter().find(|s| s.name.eq_ignore_ascii_case(name)) {
-            return s.value;
-        }
-    }
-    of_kind.first().map_or(0.0, |s| s.value)
-}
-
-fn pick_cpu(sensors: &[Sensor]) -> f32 {
-    pick(sensors, "cpu|", &["CPU Package", "Core (Tctl/Tdie)", "Core (Tctl)", "Tctl/Tdie", "Tctl", "Core Max", "Core Average", "CPU Cores"])
-}
-
-fn pick_gpu(sensors: &[Sensor]) -> f32 {
-    let dgpu = pick(sensors, "gpu|", &["GPU Core", "GPU Hot Spot"]);
-    if dgpu > 0.0 {
-        dgpu
-    } else {
-        pick(sensors, "igpu|", &["GPU Core"])
-    }
-}
-
-fn nvidia_smi_temp() -> Option<f32> {
-    let out = Command::new("nvidia-smi")
-        .args(["-i", "0", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
 #[cfg(test)]
@@ -219,37 +249,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_lhm_values() {
-        assert_eq!(parse_celsius("45.5 °C"), Some(45.5));
-        assert_eq!(parse_celsius("45,5 °C"), Some(45.5));
-        assert_eq!(parse_celsius("122.0 °F"), Some(50.0));
-        assert_eq!(parse_celsius("0.0 °C"), None);
-        assert_eq!(parse_celsius("n/a"), None);
-    }
-
-    #[test]
-    fn collects_cpu_and_gpu_and_hides_machine_name() {
-        let tree = serde_json::json!({
-            "Text": "Sensor", "Children": [{
-                "Text": "MY-PC", "ImageURL": "images_icon/computer.png", "Value": "", "Children": [
-                    {"Text": "AMD Ryzen 7 7800X3D", "ImageURL": "images_icon/cpu.png", "Value": "", "Children": [
-                        {"Text": "Temperatures", "ImageURL": "images_icon/temperature.png", "Value": "", "Children": [
-                            {"Text": "Core (Tctl/Tdie)", "Value": "61.4 °C", "SensorId": "/amdcpu/0/temperature/2", "Type": "Temperature", "ImageURL": "images/transparent.png"}
-                        ]}
-                    ]},
-                    {"Text": "NVIDIA GeForce RTX 4080", "ImageURL": "images_icon/nvidia.png", "Value": "", "Children": [
-                        {"Text": "Temperatures", "ImageURL": "images_icon/temperature.png", "Value": "", "Children": [
-                            {"Text": "GPU Core", "Value": "48,0 °C", "ImageURL": "images/transparent.png"}
-                        ]}
-                    ]}
-                ]
-            }]
-        });
-        let mut sensors = Vec::new();
-        collect(&tree, None, &mut sensors);
-        assert_eq!(sensors.len(), 2);
-        assert_eq!(pick_cpu(&sensors), 61.4);
-        assert_eq!(pick_gpu(&sensors), 48.0);
-        assert!(sensors.iter().all(|s| !s.hardware.contains("MY-PC") && !s.id.contains("MY-PC")));
+    fn cpu_load_is_a_percentage() {
+        let mut l = CpuLoad::default();
+        assert_eq!(l.sample(), 0.0);
+        thread::sleep(Duration::from_millis(50));
+        let v = l.sample();
+        assert!((0.0..=100.0).contains(&v));
     }
 }

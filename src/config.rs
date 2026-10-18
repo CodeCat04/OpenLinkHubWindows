@@ -11,13 +11,8 @@ use std::sync::{OnceLock, RwLock};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
-    /// Address the web UI binds to. Keep it on loopback unless you know what you're doing.
-    pub listen_address: String,
-    pub listen_port: u16,
-    /// Open the dashboard in the default browser when the app starts.
-    pub open_browser: bool,
-    /// LibreHardwareMonitor remote web server JSON endpoint, used for CPU/GPU temperatures.
-    pub lhm_url: String,
+    /// Open the dashboard window when the app is started by hand (not at sign-in).
+    pub open_dashboard: bool,
     /// Don't drive fan curves; leave speeds at their defaults.
     pub manual: bool,
     /// Log raw HID traffic summaries.
@@ -27,10 +22,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            listen_address: "127.0.0.1".into(),
-            listen_port: 27003,
-            open_browser: true,
-            lhm_url: "http://127.0.0.1:8085/data.json".into(),
+            open_dashboard: true,
             manual: false,
             debug: false,
         }
@@ -81,21 +73,6 @@ pub fn update(f: impl FnOnce(&mut Config)) -> std::io::Result<()> {
     save_json(&path("config.json"), &*cfg)
 }
 
-/// The app never talks to anything beyond this computer, so the only URL it will fetch
-/// (LibreHardwareMonitor) must be plain HTTP on a loopback address.
-pub fn is_loopback_url(url: &str) -> bool {
-    let Some(rest) = url.trim().strip_prefix("http://") else { return false };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.contains('@') {
-        return false;
-    }
-    let host = match authority.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(""),
-        None => authority.split(':').next().unwrap_or(""),
-    };
-    matches!(host.to_ascii_lowercase().as_str(), "127.0.0.1" | "localhost" | "::1")
-}
-
 pub fn load_json<T: DeserializeOwned>(file: &Path) -> Option<T> {
     let text = fs::read_to_string(file).ok()?;
     match serde_json::from_str(&text) {
@@ -114,20 +91,3 @@ pub fn save_json<T: Serialize>(file: &Path, value: &T) -> std::io::Result<()> {
     fs::rename(&tmp, file)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::is_loopback_url;
-
-    #[test]
-    fn only_loopback_urls_are_allowed() {
-        assert!(is_loopback_url("http://127.0.0.1:8085/data.json"));
-        assert!(is_loopback_url("http://localhost:8085/data.json"));
-        assert!(is_loopback_url("http://[::1]:8085/data.json"));
-        assert!(!is_loopback_url("https://127.0.0.1:8085/data.json"));
-        assert!(!is_loopback_url("http://192.168.1.10:8085/data.json"));
-        assert!(!is_loopback_url("http://example.com/data.json"));
-        assert!(!is_loopback_url("http://127.0.0.1.example.com/data.json"));
-        assert!(!is_loopback_url("http://127.0.0.1@example.com/data.json"));
-        assert!(!is_loopback_url("http://localhost.evil:80/"));
-    }
-}

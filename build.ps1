@@ -70,6 +70,7 @@ if ($LASTEXITCODE -ne 0) {
 
 New-Item -ItemType Directory -Force dist | Out-Null
 Copy-Item target\release\OpenLinkHub.exe dist\OpenLinkHub.exe -Force
+Copy-Item target\release\OpenLinkHubSensors.exe dist\OpenLinkHubSensors.exe -Force
 
 if ($iscc) {
     & $iscc /Qp "/DAppVersion=$version" installer\OpenLinkHub.iss

@@ -5,11 +5,13 @@
 //! - speed (3 s):  evaluates every channel's fan/pump curve and pushes duty changes
 //! - rgb   (20 ms): renders effects for every LED on the chain and streams the frame
 
+pub mod adapters;
 pub mod manager;
 pub mod metadata;
 pub mod transport;
 
 use crate::config;
+use crate::lcd::{LcdController, LcdInfo, LcdReadings, LcdSettings};
 use crate::rgb::{self, ActiveRgb, Color, FrameInputs, RgbState};
 use crate::rgb_profiles;
 use crate::sensors;
@@ -18,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use transport::*;
@@ -55,6 +57,14 @@ pub struct HubProfile {
     pub rgb_profiles: BTreeMap<u8, String>,
     pub labels: BTreeMap<u8, String>,
     pub rgb_overrides: BTreeMap<u8, RgbOverride>,
+    /// LINK adapter channel → configuration index in `adapters::all()`.
+    pub adapters: BTreeMap<u8, u32>,
+    /// LINK adapter channel → part index → RGB profile.
+    pub sub_rgb_profiles: BTreeMap<u8, BTreeMap<u8, String>>,
+    /// Pump channel → LCD screen settings.
+    pub lcd: BTreeMap<u8, LcdSettings>,
+    /// Pump channel → LCD panel serial (only needed with several XD5/XC7 panels).
+    pub lcd_devices: BTreeMap<u8, String>,
     /// LED brightness, 0-100 %.
     pub brightness: u8,
     pub rgb_off: bool,
@@ -67,10 +77,32 @@ impl Default for HubProfile {
             rgb_profiles: BTreeMap::new(),
             labels: BTreeMap::new(),
             rgb_overrides: BTreeMap::new(),
+            adapters: BTreeMap::new(),
+            sub_rgb_profiles: BTreeMap::new(),
+            lcd: BTreeMap::new(),
+            lcd_devices: BTreeMap::new(),
             brightness: 100,
             rgb_off: false,
         }
     }
+}
+
+/// An LCD panel as shown in the dashboard.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LcdView {
+    pub product: String,
+    pub settings: LcdSettings,
+}
+
+/// A strip or fan behind a LINK adapter.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubDevice {
+    pub index: u8,
+    pub name: String,
+    pub led_channels: u8,
+    pub rgb_profile: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -97,6 +129,14 @@ pub struct LinkDevice {
     pub titan_aio: bool,
     #[serde(skip)]
     pub port_id: u8,
+    /// Hub "device command code" (needed when rewriting the table for LINK adapters).
+    #[serde(skip)]
+    pub device_code: u8,
+    /// LINK adapter configuration index (0 = nothing connected).
+    pub adapter: u32,
+    pub sub_devices: Vec<SubDevice>,
+    /// LCD panel attached to this pump, if any.
+    pub lcd: Option<LcdView>,
     pub rpm: i16,
     pub temperature: f32,
     pub speed_profile: String,
@@ -118,6 +158,7 @@ struct HubState {
     global_brightness: f64,
     critical: bool,
     has_psu: bool,
+    led_tables: adapters::LedTables,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +187,8 @@ pub struct Hub {
     io_failures: AtomicU64,
     rgb_generation: AtomicU64,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Pump channel → (panel, product name).
+    lcds: Mutex<BTreeMap<u8, (Arc<LcdController>, &'static str)>>,
 }
 
 impl Hub {
@@ -162,19 +205,19 @@ impl Hub {
         t.transfer(CMD_SOFTWARE_MODE, &[], 0)?;
         thread::sleep(Duration::from_millis(500));
 
-        // Device LED command codes. Not used by this port, but iCUE and upstream read them
-        // before enumerating, and the hub firmware may expect the sequence.
-        let _ = t.read_device_data(CMD_DEVICE_COMMAND_CODES);
-        let _ = t.read_device_data(CMD_DEVICE_COMMAND_LEDS);
+        // Device command codes and LED counts, needed to configure LINK adapters.
+        let codes = t.read_device_data(CMD_DEVICE_COMMAND_CODES)?;
+        let leds = t.read_device_data(CMD_DEVICE_COMMAND_LEDS)?;
+        let led_tables = adapters::LedTables::parse(&codes, &leds);
 
         let profile: HubProfile = config::load_json(&profile_path(&serial)).unwrap_or_default();
-        let (devices, has_lcd) = discover_devices(&t, &profile, firmware_major)?;
+        let (devices, has_lcd) = discover_devices(&t, &profile, firmware_major, &led_tables)?;
         let mut devices = devices;
         apply_commander_duo_leds(&t, &mut devices);
         t.open_color_endpoint()?;
 
         let has_psu = devices.values().any(|d| d.is_psu);
-        let mut state = HubState { devices, profile, has_lcd, global_brightness: 0.0, critical: false, has_psu };
+        let mut state = HubState { devices, profile, has_lcd, global_brightness: 0.0, critical: false, has_psu, led_tables };
         state.global_brightness = port_protection(&state.devices);
         if state.global_brightness != 0.0 {
             log::warn!(
@@ -195,6 +238,7 @@ impl Hub {
             io_failures: AtomicU64::new(0),
             rgb_generation: AtomicU64::new(1),
             threads: Mutex::new(Vec::new()),
+            lcds: Mutex::new(BTreeMap::new()),
         });
 
         // Defaults: every channel to 70 % until the first curve evaluation.
@@ -280,6 +324,9 @@ impl Hub {
         log::info!("[{}] Stopping...", self.tag);
         for t in self.threads.lock().unwrap().drain(..) {
             let _ = t.join();
+        }
+        for (lcd, _) in std::mem::take(&mut *self.lcds.lock().unwrap()).into_values() {
+            lcd.stop(self.is_failed());
         }
         if !self.is_failed() {
             let t = self.io.lock().unwrap();
@@ -482,7 +529,8 @@ impl Hub {
         self.state.read().unwrap().devices.values().map(|d| d.led_channels as usize).sum()
     }
 
-    /// Build one frame for every LED on the chain, in channel order.
+    /// Build one frame for every LED on the chain, in channel order. LINK adapters
+    /// contribute one segment per connected strip or fan, each with its own effect.
     fn render_frame(&self, start: &mut Instant, state: &mut RgbState) -> Option<Vec<u8>> {
         let s = self.state.read().unwrap();
         let total: usize = s.devices.values().map(|d| d.led_channels as usize).sum();
@@ -493,76 +541,52 @@ impl Hub {
             return Some(vec![0u8; total * 3]);
         }
 
-        let brightness = if s.global_brightness != 0.0 {
-            s.global_brightness
-        } else {
-            rgb::brightness_value_float(s.profile.brightness)
+        let ctx = FrameContext {
+            brightness: if s.global_brightness != 0.0 {
+                s.global_brightness
+            } else {
+                rgb::brightness_value_float(s.profile.brightness)
+            },
+            liquid: liquid_temperature(&s.devices) as f64,
+            probe: s.devices.values().find(|d| d.is_probe && d.temperature > 0.0).map_or(0.0, |d| d.temperature) as f64,
+            has_lcd: s.has_lcd,
+            critical: s.critical,
         };
-        let liquid = liquid_temperature(&s.devices) as f64;
-        let probe = s.devices.values().find(|d| d.is_probe && d.temperature > 0.0).map_or(0.0, |d| d.temperature) as f64;
 
         let mut frame = Vec::with_capacity(total * 3);
-        for d in s.devices.values() {
-            if d.led_channels == 0 {
-                continue;
-            }
-            let mode = if s.critical { "colorpulse" } else { d.rgb_profile.as_str() };
-            let profile = rgb_profiles::get(mode).unwrap_or_default();
-            let custom = !(profile.start_color.is_empty() || profile.end_color.is_empty());
-            let speed = profile.speed.clamp(0.1, 10.0);
-
-            let mut r = ActiveRgb::new(d.led_channels as usize, speed, profile.brightness);
-            r.has_lcd = s.has_lcd;
-            r.is_aio = d.aio;
-            r.channel_id = d.channel_id as i32;
-            if custom {
-                r.start_color = profile.start_color;
-                r.end_color = profile.end_color;
-                r.middle_color = profile.middle_color;
+        for d in s.devices.values().filter(|d| d.led_channels > 0) {
+            if d.is_link_adapter {
+                for part in &d.sub_devices {
+                    // Upstream keys adapter parts' effect state as channel 48 + part index.
+                    let seg = Segment { leds: part.led_channels, channel_id: 48 + part.index as i32, aio: false, probe_temp: None, rgb_override: None };
+                    frame.extend_from_slice(&render_segment(&ctx, &part.rgb_profile, &seg, start, state));
+                }
             } else {
-                r.start_color = state.start_color;
-                r.end_color = state.end_color;
-                r.middle_color = state.middle_color;
+                let seg = Segment {
+                    leds: d.led_channels,
+                    channel_id: d.channel_id as i32,
+                    aio: d.aio,
+                    probe_temp: d.is_probe.then_some(d.temperature as f64),
+                    rgb_override: d.rgb_override.enabled.then_some(&d.rgb_override),
+                };
+                frame.extend_from_slice(&render_segment(&ctx, &d.rgb_profile, &seg, start, state));
             }
-            if d.rgb_override.enabled && !s.critical {
-                r.start_color = d.rgb_override.start;
-                r.end_color = d.rgb_override.end;
-                r.middle_color = d.rgb_override.middle;
-                if d.rgb_override.speed > 0.0 {
-                    r.rgb_mode_speed = d.rgb_override.speed.clamp(0.1, 10.0);
-                }
-            }
-            r.brightness = brightness;
-            r.start_color.brightness = brightness;
-            r.end_color.brightness = brightness;
-            r.middle_color.brightness = brightness;
-            r.min_temp = profile.min_temp;
-            r.max_temp = profile.max_temp;
-
-            let temperature = match mode {
-                "liquid-temperature" => liquid,
-                "cpu-temperature" => sensors::cpu() as f64,
-                "gpu-temperature" => sensors::gpu() as f64,
-                "probe-temperature" => {
-                    // Upstream defaults the probe gradient range to 0-60 °C per device.
-                    r.min_temp = 0.0;
-                    r.max_temp = 60.0;
-                    r.start_color.temperature = 0.0;
-                    r.end_color.temperature = 60.0;
-                    if d.is_probe { d.temperature as f64 } else { probe }
-                }
-                _ => 0.0,
-            };
-
-            rgb::run_effect(mode, &mut r, FrameInputs { start, state, profile: &profile, temperature });
-            frame.extend_from_slice(&r.output);
         }
+        // Keep the frame exactly as long as the hub expects even if a part list is short.
+        frame.resize(total * 3, 0);
         Some(frame)
     }
 
     // ---------------------------------------------------------------- API
 
     pub fn view(&self) -> HubView {
+        let lcds: BTreeMap<u8, LcdView> = self
+            .lcds
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(&ch, (c, product))| (ch, LcdView { product: product.to_string(), settings: c.settings() }))
+            .collect();
         let s = self.state.read().unwrap();
         HubView {
             serial: self.serial.clone(),
@@ -572,8 +596,90 @@ impl Hub {
             rgb_off: s.profile.rgb_off,
             brightness_cap: s.global_brightness,
             critical: s.critical,
-            devices: s.devices.values().cloned().collect(),
+            devices: s
+                .devices
+                .values()
+                .cloned()
+                .map(|mut d| {
+                    d.lcd = lcds.get(&d.channel_id).cloned();
+                    d
+                })
+                .collect(),
         }
+    }
+
+    // ---------------------------------------------------------------- LCD
+
+    /// The pump channel a newly found LCD panel belongs to, if any (Go: `getDevices`).
+    /// AIO panels go to the AIO pump; XD5/XC7 panels to a non-AIO pump, preferring the
+    /// channel the user assigned this panel to.
+    pub fn lcd_channel_for(&self, info: &LcdInfo) -> Option<u8> {
+        let s = self.state.read().unwrap();
+        if !s.has_lcd {
+            return None;
+        }
+        let taken = self.lcds.lock().unwrap();
+        let free: Vec<&LinkDevice> =
+            s.devices.values().filter(|d| d.contains_pump && d.aio == info.aio && !taken.contains_key(&d.channel_id)).collect();
+        if let Some(d) = free.iter().find(|d| s.profile.lcd_devices.get(&d.channel_id) == Some(&info.serial)) {
+            return Some(d.channel_id);
+        }
+        free.iter().find(|d| !s.profile.lcd_devices.contains_key(&d.channel_id)).map(|d| d.channel_id)
+    }
+
+    pub fn has_lcd_panel(&self, serial: &str) -> bool {
+        self.lcds.lock().unwrap().values().any(|(c, _)| c.serial() == serial)
+    }
+
+    /// Start driving `info` as the screen of pump `channel`.
+    pub fn attach_lcd(self: &Arc<Self>, api: &hidapi::HidApi, info: &LcdInfo, channel: u8) {
+        let settings = self.state.read().unwrap().profile.lcd.get(&channel).cloned().unwrap_or_default();
+        let weak: Weak<Hub> = Arc::downgrade(self);
+        let source = Arc::new(move || weak.upgrade().map(|h| h.lcd_readings(channel)).unwrap_or_default());
+        match LcdController::start(api, info, settings, source) {
+            Ok(c) => {
+                log::info!("[{}] {} attached to channel {channel}", self.tag, info.product());
+                self.lcds.lock().unwrap().insert(channel, (c, info.product()));
+                self.state.write().unwrap().profile.lcd_devices.insert(channel, info.serial.clone());
+                self.save_profile();
+            }
+            Err(e) => log::warn!("[{}] Unable to open {}: {e}", self.tag, info.product()),
+        }
+    }
+
+    /// Drop panels that stopped responding or were unplugged so they can be re-attached.
+    pub fn prune_lcds(&self, present: &[LcdInfo]) {
+        let mut lcds = self.lcds.lock().unwrap();
+        let gone: Vec<u8> = lcds
+            .iter()
+            .filter(|(_, (c, _))| c.is_failed() || !present.iter().any(|p| p.serial == c.serial()))
+            .map(|(&ch, _)| ch)
+            .collect();
+        for ch in gone {
+            if let Some((c, product)) = lcds.remove(&ch) {
+                log::info!("[{}] {product} on channel {ch} disconnected", self.tag);
+                c.stop(true);
+            }
+        }
+    }
+
+    fn lcd_readings(&self, channel: u8) -> LcdReadings {
+        let snap = sensors::snapshot();
+        let s = self.state.read().unwrap();
+        let (liquid, pump) = match s.devices.get(&channel) {
+            Some(d) if d.contains_pump => (d.temperature, d.rpm),
+            _ => (liquid_temperature(&s.devices), 0),
+        };
+        LcdReadings { liquid_temp: liquid, pump_rpm: pump, cpu_temp: snap.cpu, gpu_temp: snap.gpu, cpu_load: snap.cpu_load, gpu_load: snap.gpu_load }
+    }
+
+    pub fn set_lcd(&self, channel: u8, settings: LcdSettings) -> Result<(), String> {
+        let controller = self.lcds.lock().unwrap().get(&channel).map(|(c, _)| c.clone()).ok_or("No LCD on that channel")?;
+        controller.update(settings)?;
+        // Re-read: the panel may adjust settings (e.g. pick the first image).
+        self.state.write().unwrap().profile.lcd.insert(channel, controller.settings());
+        self.save_profile();
+        Ok(())
     }
 
     pub fn device_temperature(&self, channel: u8) -> f32 {
@@ -602,10 +708,100 @@ impl Hub {
             if d.led_channels == 0 {
                 return false;
             }
-            d.rgb_profile = profile.to_string();
-            p.rgb_profiles.insert(d.channel_id, profile.to_string());
+            if d.is_link_adapter {
+                // Applies to every strip/fan behind the adapter.
+                let subs = p.sub_rgb_profiles.entry(d.channel_id).or_default();
+                for part in &mut d.sub_devices {
+                    part.rgb_profile = profile.to_string();
+                    subs.insert(part.index, profile.to_string());
+                }
+            } else {
+                d.rgb_profile = profile.to_string();
+                p.rgb_profiles.insert(d.channel_id, profile.to_string());
+            }
             true
         })?;
+        self.rgb_generation.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Set the RGB profile of one strip/fan behind a LINK adapter.
+    pub fn set_sub_rgb_profile(&self, channel: u8, part: u8, profile: &str) -> Result<(), String> {
+        if rgb_profiles::get(profile).is_none() {
+            return Err(format!("Unknown RGB profile '{profile}'"));
+        }
+        self.update_channels(&[channel], |p, d| {
+            let Some(sub) = d.sub_devices.iter_mut().find(|s| s.index == part) else { return false };
+            sub.rgb_profile = profile.to_string();
+            p.sub_rgb_profiles.entry(d.channel_id).or_default().insert(part, profile.to_string());
+            true
+        })?;
+        self.rgb_generation.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Choose what is connected to a LINK adapter (Go: `UpdateLinkAdapter`). Rewrites the
+    /// hub's device command code and LED count tables and power-cycles the LED ports.
+    pub fn set_link_adapter(&self, channel: u8, adapter: u32) -> Result<(), String> {
+        let def = adapters::get(adapter).ok_or("Unknown LINK adapter configuration")?;
+        let (table, leds) = {
+            let s = self.state.read().unwrap();
+            let dev = s.devices.get(&channel).filter(|d| d.is_link_adapter).ok_or("That device is not a LINK adapter")?;
+            let max_channel = s.devices.values().filter(|d| !d.is_psu).map(|d| d.channel_id).max().unwrap_or(0);
+            // Same safety check as upstream: never rewrite the table if it doesn't match the chain.
+            if s.led_tables.length != max_channel + 1 {
+                return Err(format!(
+                    "The hub reports {} channels but {} were found; not changing the adapter to avoid misconfiguring the hub",
+                    s.led_tables.length,
+                    max_channel + 1
+                ));
+            }
+            let kinds: BTreeMap<u8, adapters::ChannelKind> = s
+                .devices
+                .values()
+                .map(|d| {
+                    let kind = if d.channel_id == dev.channel_id {
+                        adapters::ChannelKind::Adapter(adapter)
+                    } else if d.is_link_adapter {
+                        adapters::ChannelKind::Adapter(d.adapter)
+                    } else if d.is_commander_duo {
+                        adapters::ChannelKind::CommanderDuo
+                    } else {
+                        adapters::ChannelKind::Device(d.device_code)
+                    };
+                    (d.channel_id, kind)
+                })
+                .collect();
+            let mut leds = s.led_tables.leds.clone();
+            if !adapters::set_led_count(&mut leds, channel, def.total_leds()) {
+                return Err("The hub's LED table is too short for this channel".into());
+            }
+            (adapters::command_table(&kinds, max_channel), leds)
+        };
+
+        self.with_io("configure LINK adapter", |t| {
+            t.write(CMD_DEVICE_COMMAND_CODES, DATA_TYPE_COMMAND_MODE, &table)?;
+            t.write(CMD_DEVICE_COMMAND_LEDS, DATA_TYPE_LED_COUNT, &leds)?;
+            t.transfer(CMD_RESET_LED_POWER, &[], 0)?;
+            Ok(())
+        })
+        .ok_or("The hub did not accept the adapter configuration")?;
+
+        {
+            let mut s = self.state.write().unwrap();
+            s.led_tables.leds = leds;
+            let HubState { devices, profile, .. } = &mut *s;
+            profile.adapters.insert(channel, adapter);
+            profile.sub_rgb_profiles.remove(&channel);
+            if let Some(d) = devices.get_mut(&channel) {
+                d.adapter = adapter;
+                d.sub_devices = adapter_parts(adapter, None);
+                d.led_channels = def.total_leds();
+            }
+            s.global_brightness = port_protection(&s.devices);
+        }
+        self.save_profile();
+        log::info!("[{}] LINK adapter on channel {channel} set to {}", self.tag, def.name);
         self.rgb_generation.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -685,13 +881,84 @@ pub fn short_serial(serial: &str) -> String {
     format!("hub …{tail}")
 }
 
+/// Hub-wide inputs shared by every segment of a frame.
+struct FrameContext {
+    brightness: f64,
+    liquid: f64,
+    /// First temperature probe on the hub, for probe-temperature effects on other devices.
+    probe: f64,
+    has_lcd: bool,
+    critical: bool,
+}
+
+/// A run of LEDs driven by one effect: a device, or one part behind a LINK adapter.
+struct Segment<'a> {
+    leds: u8,
+    channel_id: i32,
+    aio: bool,
+    /// The segment's own probe reading, if it is a temperature probe.
+    probe_temp: Option<f64>,
+    rgb_override: Option<&'a RgbOverride>,
+}
+
+/// Render one segment (Go: `generateRgbEffect`).
+fn render_segment(ctx: &FrameContext, rgb_profile: &str, seg: &Segment, start: &mut Instant, state: &mut RgbState) -> Vec<u8> {
+    let mode = if ctx.critical { "colorpulse" } else { rgb_profile };
+    let profile = rgb_profiles::get(mode).unwrap_or_default();
+    let custom = !(profile.start_color.is_empty() || profile.end_color.is_empty());
+
+    let mut r = ActiveRgb::new(seg.leds as usize, profile.speed.clamp(0.1, 10.0), profile.brightness);
+    r.has_lcd = ctx.has_lcd;
+    r.is_aio = seg.aio;
+    r.channel_id = seg.channel_id;
+    if custom {
+        (r.start_color, r.end_color, r.middle_color) = (profile.start_color, profile.end_color, profile.middle_color);
+    } else {
+        (r.start_color, r.end_color, r.middle_color) = (state.start_color, state.end_color, state.middle_color);
+    }
+    if let Some(o) = seg.rgb_override.filter(|_| !ctx.critical) {
+        (r.start_color, r.end_color, r.middle_color) = (o.start, o.end, o.middle);
+        if o.speed > 0.0 {
+            r.rgb_mode_speed = o.speed.clamp(0.1, 10.0);
+        }
+    }
+    r.brightness = ctx.brightness;
+    r.start_color.brightness = ctx.brightness;
+    r.end_color.brightness = ctx.brightness;
+    r.middle_color.brightness = ctx.brightness;
+    r.min_temp = profile.min_temp;
+    r.max_temp = profile.max_temp;
+
+    let temperature = match mode {
+        "liquid-temperature" => ctx.liquid,
+        "cpu-temperature" => sensors::cpu() as f64,
+        "gpu-temperature" => sensors::gpu() as f64,
+        "probe-temperature" => {
+            // Upstream defaults the probe gradient range to 0-60 °C per device.
+            r.min_temp = 0.0;
+            r.max_temp = 60.0;
+            r.start_color.temperature = 0.0;
+            r.end_color.temperature = 60.0;
+            seg.probe_temp.unwrap_or(ctx.probe)
+        }
+        _ => 0.0,
+    };
+    rgb::run_effect(mode, &mut r, FrameInputs { start, state, profile: &profile, temperature });
+    r.output
+}
+
 fn profile_path(serial: &str) -> std::path::PathBuf {
     let safe: String = serial.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     config::path("hubs").join(format!("{safe}.json"))
 }
 
 /// Parse the LINK chain (Go: getDevices). Returns devices by channel id and whether an LCD is present.
-fn discover_devices(t: &Transport, profile: &HubProfile, firmware_major: u8) -> io::Result<(BTreeMap<u8, LinkDevice>, bool)> {
+fn discover_devices(
+    t: &Transport,
+    profile: &HubProfile,
+    firmware_major: u8,
+    led_tables: &adapters::LedTables,
+) -> io::Result<(BTreeMap<u8, LinkDevice>, bool)> {
     let response = t.read(MODE_GET_DEVICES, DATA_TYPE_GET_DEVICES, 0)?;
     let channels = response[6];
     let data = &response[7..];
@@ -758,6 +1025,12 @@ fn discover_devices(t: &Transport, profile: &HubProfile, firmware_major: u8) -> 
         if meta.psu {
             d.speed_profile = "PSU".into();
         }
+        d.device_code = led_tables.code_for(i);
+        if meta.link_adapter {
+            d.adapter = profile.adapters.get(&i).copied().filter(|&a| adapters::get(a).is_some()).unwrap_or(0);
+            d.sub_devices = adapter_parts(d.adapter, profile.sub_rgb_profiles.get(&i));
+            d.led_channels = d.sub_devices.iter().map(|p| p.led_channels as u32).sum::<u32>().min(255) as u8;
+        }
         if meta.commander_duo {
             d.name = format!("{} - Channel {duo_port}", d.name);
             duo_port += 1;
@@ -786,6 +1059,24 @@ fn discover_devices(t: &Transport, profile: &HubProfile, firmware_major: u8) -> 
         }
     }
     Ok((devices, lcd))
+}
+
+/// Parts behind a LINK adapter configuration, with their saved RGB profiles (default static).
+fn adapter_parts(adapter: u32, saved: Option<&BTreeMap<u8, String>>) -> Vec<SubDevice> {
+    let Some(def) = adapters::get(adapter).filter(|_| adapter > 0) else { return Vec::new() };
+    def.devices
+        .iter()
+        .map(|(&index, part)| SubDevice {
+            index,
+            name: part.name.clone(),
+            led_channels: part.total,
+            rgb_profile: saved
+                .and_then(|m| m.get(&index))
+                .filter(|p| rgb_profiles::get(p).is_some())
+                .cloned()
+                .unwrap_or_else(|| "static".into()),
+        })
+        .collect()
 }
 
 /// AIOs default to their own coolant sensor, which works without LibreHardwareMonitor.
@@ -897,7 +1188,6 @@ fn sensor_temperature(p: &TemperatureProfile, serial: &str, devices: &BTreeMap<u
                 manager::device_temperature(&p.device, p.channel_id)
             }
         }
-        temperatures::SENSOR_LHM => sensors::by_id(&p.sensor_id),
         _ => 0.0,
     };
     // All sources failed: assume a moderate load rather than stopping fans (upstream behaviour).

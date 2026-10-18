@@ -26,6 +26,7 @@ pub const CMD_READ: &[u8] = &[0x08, 0x01];
 pub const CMD_READ_COLOR: &[u8] = &[0x08, 0x00];
 pub const CMD_DEVICE_COMMAND_CODES: &[u8] = &[0x1e];
 pub const CMD_DEVICE_COMMAND_LEDS: &[u8] = &[0x1d];
+pub const CMD_RESET_LED_POWER: &[u8] = &[0x15, 0x01];
 
 pub const MODE_GET_LEDS: &[u8] = &[0x20];
 pub const MODE_GET_DEVICES: &[u8] = &[0x36];
@@ -43,6 +44,8 @@ pub const DATA_TYPE_GET_SPEEDS: &[u8] = &[0x25, 0x00];
 pub const DATA_TYPE_SET_SPEED: &[u8] = &[0x07, 0x00];
 pub const DATA_TYPE_SET_COLOR: &[u8] = &[0x12, 0x00];
 pub const DATA_TYPE_SUB_COLOR: &[u8] = &[0x07, 0x00];
+pub const DATA_TYPE_COMMAND_MODE: &[u8] = &[0x0d, 0x00];
+pub const DATA_TYPE_LED_COUNT: &[u8] = &[0x0c, 0x00];
 
 /// Header byte used for packets addressed to a PSU on the LINK chain.
 pub const PSU_HEADER: u8 = 0x19;

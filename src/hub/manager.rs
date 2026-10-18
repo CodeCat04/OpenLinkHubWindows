@@ -85,7 +85,7 @@ fn scan() {
         hub.stop();
     }
 
-    for (serial, path) in present {
+    for (serial, path) in present.iter().cloned() {
         if STOPPING.load(Ordering::Relaxed) || hubs().read().unwrap().contains_key(&serial) {
             continue;
         }
@@ -101,6 +101,21 @@ fn scan() {
                 hubs().write().unwrap().insert(serial, hub);
             }
             Err(e) => log::warn!("Unable to initialise {}: {e}. Will retry.", super::short_serial(&serial)),
+        }
+    }
+
+    // LCD panels (pump caps, XD5/XC7 screens) are separate USB devices attached to a hub's pump.
+    let panels = crate::lcd::discover(api);
+    let hubs_now = all();
+    for hub in &hubs_now {
+        hub.prune_lcds(&panels);
+    }
+    for info in &panels {
+        if STOPPING.load(Ordering::Relaxed) || hubs_now.iter().any(|h| h.has_lcd_panel(&info.serial)) {
+            continue;
+        }
+        if let Some((hub, ch)) = hubs_now.iter().find_map(|h| h.lcd_channel_for(info).map(|ch| (h, ch))) {
+            hub.attach_lcd(api, info, ch);
         }
     }
 }

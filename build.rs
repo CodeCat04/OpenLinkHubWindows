@@ -1,10 +1,12 @@
-//! Embeds the app icon, version info and manifest into OpenLinkHub.exe.
+//! Embeds the icon, version info and manifest into OpenLinkHub.exe, and version info into
+//! OpenLinkHubSensors.exe.
 
 use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/OpenLinkHub.ico");
     println!("cargo:rerun-if-changed=app.manifest");
+    println!("cargo:rerun-if-changed=build.rs");
     let root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let root = Path::new(&root);
     let out = std::env::var("OUT_DIR").unwrap();
@@ -16,11 +18,22 @@ fn main() {
     // rc.exe accepts forward slashes, which avoids escaping backslashes.
     let path = |p: &Path| p.display().to_string().replace('\\', "/");
 
-    let rc = format!(
-        r#"#include <winver.h>
-1 ICON "{ico}"
-1 24 "{manifest}"
-VS_VERSION_INFO VERSIONINFO
+    // OpenLinkHub.exe gets the icon and manifest; the service only needs version info.
+    for (bin, description, extra) in [
+        (
+            "OpenLinkHub",
+            "OpenLinkHub",
+            format!(
+                "1 ICON \"{}\"\n1 24 \"{}\"\n",
+                path(&root.join("assets").join("OpenLinkHub.ico")),
+                path(&root.join("app.manifest"))
+            ),
+        ),
+        ("OpenLinkHubSensors", "OpenLinkHub Sensors", String::new()),
+    ] {
+        let rc = format!(
+            r#"#include <winver.h>
+{extra}VS_VERSION_INFO VERSIONINFO
 FILEVERSION {v}
 PRODUCTVERSION {v}
 FILEOS VOS_NT_WINDOWS32
@@ -30,11 +43,11 @@ BEGIN
   BEGIN
     BLOCK "040904b0"
     BEGIN
-      VALUE "FileDescription", "OpenLinkHub"
+      VALUE "FileDescription", "{description}"
       VALUE "ProductName", "OpenLinkHub"
       VALUE "FileVersion", "{version}"
       VALUE "ProductVersion", "{version}"
-      VALUE "OriginalFilename", "OpenLinkHub.exe"
+      VALUE "OriginalFilename", "{bin}.exe"
       VALUE "LegalCopyright", "GPL-3.0-or-later"
     END
   END
@@ -43,11 +56,10 @@ BEGIN
     VALUE "Translation", 0x409, 1200
   END
 END
-"#,
-        ico = path(&root.join("assets").join("OpenLinkHub.ico")),
-        manifest = path(&root.join("app.manifest")),
-    );
-    let rc_path = Path::new(&out).join("app.rc");
-    std::fs::write(&rc_path, rc).unwrap();
-    embed_resource::compile(&rc_path, embed_resource::NONE).manifest_required().unwrap();
+"#
+        );
+        let rc_path = Path::new(&out).join(format!("{bin}.rc"));
+        std::fs::write(&rc_path, rc).unwrap();
+        embed_resource::compile_for(&rc_path, [bin], embed_resource::NONE).manifest_required().unwrap();
+    }
 }

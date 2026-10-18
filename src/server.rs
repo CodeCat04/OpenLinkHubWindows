@@ -1,9 +1,6 @@
-//! Local web dashboard and JSON API.
-//!
-//! The server binds to loopback only. State-changing requests must carry an
-//! `X-OpenLinkHub` header (which a cross-origin web page can't send without a CORS
-//! preflight we never approve) and a localhost `Host` header (blocks DNS rebinding),
-//! so websites you visit can't change your fan speeds.
+//! Dashboard page and JSON API, served to the dashboard window through a WebView2 custom
+//! scheme (`http://olh.localhost/`). Requests go straight from WebView2 to this function
+//! in-process: no port is opened and nothing touches the network stack.
 
 use crate::hub::{manager, RgbOverride};
 use crate::rgb::{Profile, RGB_MODES};
@@ -11,104 +8,59 @@ use crate::temperatures::{self, TemperatureProfile};
 use crate::{app, config, logging, rgb_profiles, sensors};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::io::Read;
-use std::sync::Arc;
-use std::thread;
-use tiny_http::{Header, Method, Request, Response, Server};
+use std::borrow::Cow;
+use wry::http::{Method, Request, Response};
 
 const INDEX_HTML: &str = include_str!("../web/index.html");
-const WORKERS: usize = 4;
 const MAX_BODY: usize = 64 * 1024;
+const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
 
-pub fn bind(address: &str, port: u16) -> Result<Arc<Server>, String> {
-    Server::http((address, port)).map(Arc::new).map_err(|e| e.to_string())
+type Reply = Response<Cow<'static, [u8]>>;
+
+fn reply(status: u16, content_type: &str, body: Vec<u8>) -> Reply {
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .header("Cache-Control", "no-store")
+        .header("Content-Security-Policy", CSP)
+        .body(Cow::Owned(body))
+        .expect("valid response")
 }
 
-pub fn start(server: Arc<Server>) {
-    for i in 0..WORKERS {
-        let server = Arc::clone(&server);
-        thread::Builder::new()
-            .name(format!("http-{i}"))
-            .spawn(move || loop {
-                match server.recv() {
-                    Ok(rq) => handle(rq),
-                    Err(e) => {
-                        log::warn!("HTTP server stopped: {e}");
-                        break;
-                    }
-                }
-            })
-            .expect("spawn http worker");
-    }
+fn json_reply(status: u16, body: &Value) -> Reply {
+    reply(status, "application/json", body.to_string().into_bytes())
 }
 
-fn header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("static header")
+fn fail(status: u16, message: &str) -> Reply {
+    json_reply(status, &json!({ "ok": false, "error": message }))
 }
 
-fn respond_json(rq: Request, status: u16, body: &Value) {
-    let resp = Response::from_string(body.to_string())
-        .with_status_code(status)
-        .with_header(header("Content-Type", "application/json"))
-        .with_header(header("Cache-Control", "no-store"));
-    let _ = rq.respond(resp);
-}
-
-fn ok(rq: Request) {
-    respond_json(rq, 200, &json!({ "ok": true }));
-}
-
-fn fail(rq: Request, status: u16, message: &str) {
-    respond_json(rq, status, &json!({ "ok": false, "error": message }));
-}
-
-fn host_is_local(rq: &Request) -> bool {
-    rq.headers().iter().find(|h| h.field.equiv("Host")).is_some_and(|h| {
-        let host = h.value.as_str();
-        let name = host.rsplit_once(':').map_or(host, |(n, _)| n);
-        matches!(name, "127.0.0.1" | "localhost" | "[::1]")
-    })
-}
-
-fn has_api_header(rq: &Request) -> bool {
-    rq.headers().iter().any(|h| h.field.equiv("X-OpenLinkHub"))
-}
-
-fn handle(mut rq: Request) {
-    if !host_is_local(&rq) {
-        return fail(rq, 403, "Forbidden host");
-    }
-    let url = rq.url().split('?').next().unwrap_or("/").to_string();
-    let method = rq.method().clone();
-
-    match (method, url.as_str()) {
-        (Method::Get, "/") | (Method::Get, "/index.html") => {
-            let resp = Response::from_string(INDEX_HTML)
-                .with_header(header("Content-Type", "text/html; charset=utf-8"))
-                .with_header(header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:"))
-                .with_header(header("X-Frame-Options", "DENY"));
-            let _ = rq.respond(resp);
-        }
-        (Method::Get, "/api/state") => respond_json(rq, 200, &state()),
-        (Method::Get, "/api/logs") => respond_json(rq, 200, &json!(logging::tail())),
-        (Method::Post, path) if path.starts_with("/api/") => {
-            if !has_api_header(&rq) {
-                return fail(rq, 403, "Missing X-OpenLinkHub header");
+/// Handle one request from the dashboard window.
+pub fn handle(request: Request<Vec<u8>>) -> Reply {
+    let path = request.uri().path().to_string();
+    match (request.method(), path.as_str()) {
+        (&Method::GET, "/") | (&Method::GET, "/index.html") => reply(200, "text/html; charset=utf-8", INDEX_HTML.as_bytes().to_vec()),
+        (&Method::GET, "/api/state") => json_reply(200, &state()),
+        (&Method::GET, "/api/logs") => json_reply(200, &json!(logging::tail())),
+        (&Method::POST, p) if p.starts_with("/api/") => {
+            // Defence in depth: only the dashboard's own fetch() sets this header.
+            if !request.headers().contains_key("X-OpenLinkHub") {
+                return fail(403, "Missing X-OpenLinkHub header");
             }
-            let mut body = String::new();
-            if rq.as_reader().take(MAX_BODY as u64).read_to_string(&mut body).is_err() {
-                return fail(rq, 400, "Unreadable body");
+            let body = request.body();
+            if body.len() > MAX_BODY {
+                return fail(413, "Request too large");
             }
-            let body: Value = match serde_json::from_str(if body.is_empty() { "{}" } else { &body }) {
+            let body: Value = match serde_json::from_slice(if body.is_empty() { b"{}" } else { body }) {
                 Ok(v) => v,
-                Err(e) => return fail(rq, 400, &format!("Invalid JSON: {e}")),
+                Err(e) => return fail(400, &format!("Invalid JSON: {e}")),
             };
-            match post(path, body) {
-                Ok(()) => ok(rq),
-                Err(e) => fail(rq, 400, &e),
+            match post(p, body) {
+                Ok(()) => json_reply(200, &json!({ "ok": true })),
+                Err(e) => fail(400, &e),
             }
         }
-        _ => fail(rq, 404, "Not found"),
+        _ => fail(404, "Not found"),
     }
 }
 
@@ -121,11 +73,16 @@ fn state() -> Value {
         "speedProfiles": temperatures::all(),
         "rgbProfiles": rgb_profiles::all(),
         "rgbModes": RGB_MODES,
+        "linkAdapters": crate::hub::adapters::choices(),
+        "lcd": {
+            "modes": crate::lcd::modes(true).into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+            "rotations": crate::lcd::rotations().into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+            "brightness": crate::lcd::brightness_levels().into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+            "images": crate::lcd::images(),
+        },
         "settings": {
             "autostart": app::autostart_enabled(),
-            "openBrowser": cfg.open_browser,
-            "lhmUrl": cfg.lhm_url,
-            "manual": cfg.manual,
+            "openDashboard": cfg.open_dashboard,
             "installed": app::is_installed_copy(),
             "dataDir": "%APPDATA%\\OpenLinkHub",
         },
@@ -136,7 +93,7 @@ fn parse<T: for<'de> Deserialize<'de>>(v: Value) -> Result<T, String> {
     serde_json::from_value(v).map_err(|e| format!("Invalid request: {e}"))
 }
 
-fn hub(serial: &str) -> Result<Arc<crate::hub::Hub>, String> {
+fn hub(serial: &str) -> Result<std::sync::Arc<crate::hub::Hub>, String> {
     manager::get(serial).ok_or_else(|| "Hub not found (disconnected?)".to_string())
 }
 
@@ -160,6 +117,28 @@ struct OverrideRequest {
     channel: u8,
     #[serde(rename = "override")]
     value: RgbOverride,
+}
+
+#[derive(Deserialize)]
+struct AdapterRequest {
+    serial: String,
+    channel: u8,
+    adapter: u32,
+}
+
+#[derive(Deserialize)]
+struct SubRgbRequest {
+    serial: String,
+    channel: u8,
+    part: u8,
+    profile: String,
+}
+
+#[derive(Deserialize)]
+struct LcdRequest {
+    serial: String,
+    channel: u8,
+    settings: crate::lcd::LcdSettings,
 }
 
 #[derive(Deserialize)]
@@ -195,8 +174,7 @@ struct RgbProfileRequest {
 #[serde(rename_all = "camelCase")]
 struct SettingsRequest {
     autostart: Option<bool>,
-    open_browser: Option<bool>,
-    lhm_url: Option<String>,
+    open_dashboard: Option<bool>,
 }
 
 fn post(path: &str, body: Value) -> Result<(), String> {
@@ -212,6 +190,18 @@ fn post(path: &str, body: Value) -> Result<(), String> {
         "/api/hub/override" => {
             let r: OverrideRequest = parse(body)?;
             hub(&r.serial)?.set_rgb_override(r.channel, r.value)
+        }
+        "/api/hub/adapter" => {
+            let r: AdapterRequest = parse(body)?;
+            hub(&r.serial)?.set_link_adapter(r.channel, r.adapter)
+        }
+        "/api/hub/subRgb" => {
+            let r: SubRgbRequest = parse(body)?;
+            hub(&r.serial)?.set_sub_rgb_profile(r.channel, r.part, &r.profile)
+        }
+        "/api/hub/lcd" => {
+            let r: LcdRequest = parse(body)?;
+            hub(&r.serial)?.set_lcd(r.channel, r.settings)
         }
         "/api/hub/label" => {
             let r: LabelRequest = parse(body)?;
@@ -246,18 +236,12 @@ fn post(path: &str, body: Value) -> Result<(), String> {
         }
         "/api/settings" => {
             let r: SettingsRequest = parse(body)?;
-            if r.lhm_url.as_deref().is_some_and(|u| !config::is_loopback_url(u)) {
-                return Err("Only local addresses are allowed, e.g. http://127.0.0.1:8085/data.json. OpenLinkHub never connects to other machines.".into());
-            }
             if let Some(a) = r.autostart {
                 app::set_autostart(a).map_err(|e| e.to_string())?;
             }
             config::update(|c| {
-                if let Some(v) = r.open_browser {
-                    c.open_browser = v;
-                }
-                if let Some(v) = r.lhm_url {
-                    c.lhm_url = v.trim().to_string();
+                if let Some(v) = r.open_dashboard {
+                    c.open_dashboard = v;
                 }
             })
             .map_err(|e| e.to_string())
@@ -267,5 +251,28 @@ fn post(path: &str, body: Value) -> Result<(), String> {
             Ok(())
         }
         _ => Err("Unknown endpoint".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn post_req(path: &str, body: &str, with_header: bool) -> Request<Vec<u8>> {
+        let mut b = Request::builder().method("POST").uri(format!("http://olh.localhost{path}"));
+        if with_header {
+            b = b.header("X-OpenLinkHub", "1");
+        }
+        b.body(body.as_bytes().to_vec()).unwrap()
+    }
+
+    #[test]
+    fn serves_page_and_rejects_bad_requests() {
+        let page = handle(Request::get("http://olh.localhost/").body(Vec::new()).unwrap());
+        assert_eq!(page.status(), 200);
+        assert!(std::str::from_utf8(page.body()).unwrap().contains("<title>OpenLinkHub</title>"));
+        assert_eq!(handle(post_req("/api/quit", "{}", false)).status(), 403);
+        assert_eq!(handle(post_req("/api/hub/rgb", "{bad", true)).status(), 400);
+        assert_eq!(handle(Request::get("http://olh.localhost/nope").body(Vec::new()).unwrap()).status(), 404);
     }
 }
