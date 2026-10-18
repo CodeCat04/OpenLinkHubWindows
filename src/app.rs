@@ -4,7 +4,7 @@
 //! in-process through a custom scheme. Instances coordinate through named Windows objects
 //! (a mutex and two events), so the app has no network listener of any kind.
 
-use crate::{hub, icon, server};
+use crate::{hub, icon, server, temperatures};
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -16,7 +16,7 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{
@@ -49,6 +49,8 @@ enum UserEvent {
     Menu(MenuEvent),
     Tray(TrayIconEvent),
     Show,
+    /// The fan profile changed (from the dashboard); refresh the tray's check marks.
+    FanProfile,
     Quit,
 }
 
@@ -60,6 +62,13 @@ pub fn request_shutdown() {
     SHUTDOWN.store(true, Ordering::SeqCst);
     if let Some(p) = PROXY.get() {
         let _ = p.lock().unwrap().send_event(UserEvent::Quit);
+    }
+}
+
+/// Tell the tray menu that fans changed profile.
+pub fn fan_profile_changed() {
+    if let Some(p) = PROXY.get() {
+        let _ = p.lock().unwrap().send_event(UserEvent::FanProfile);
     }
 }
 
@@ -229,9 +238,35 @@ fn open_dashboard(target: &EventLoopWindowTarget<UserEvent>, context: &mut WebCo
     Some(Dashboard { webview, window })
 }
 
-fn build_tray(autostart: &CheckMenuItem, open: &MenuItem, quit: &MenuItem) -> Option<TrayIcon> {
+/// Tray menu entries for the fan profile switcher, one per built-in preset.
+struct FanProfileItems(Vec<(&'static str, CheckMenuItem)>);
+
+impl FanProfileItems {
+    fn new() -> Self {
+        FanProfileItems(temperatures::FAN_PRESETS.into_iter().map(|name| (name, CheckMenuItem::new(name, true, false, None))).collect())
+    }
+
+    fn preset_for(&self, id: &MenuId) -> Option<&'static str> {
+        self.0.iter().find(|(_, item)| item.id() == id).map(|(name, _)| *name)
+    }
+
+    /// Check the active preset; nothing is checked while fans are on different curves.
+    fn sync(&self) {
+        let active = hub::manager::active_fan_preset();
+        for (name, item) in &self.0 {
+            item.set_checked(active == Some(*name));
+        }
+    }
+}
+
+fn build_tray(autostart: &CheckMenuItem, open: &MenuItem, profiles: &FanProfileItems, quit: &MenuItem) -> Option<TrayIcon> {
     let menu = Menu::new();
-    let _ = menu.append_items(&[open, &PredefinedMenuItem::separator(), autostart, &PredefinedMenuItem::separator(), quit]);
+    let heading = MenuItem::new("Fan profile", false, None);
+    let _ = menu.append_items(&[open, &PredefinedMenuItem::separator(), &heading]);
+    for (_, item) in &profiles.0 {
+        let _ = menu.append(item);
+    }
+    let _ = menu.append_items(&[&PredefinedMenuItem::separator(), autostart, &PredefinedMenuItem::separator(), quit]);
     let (rgba, size) = icon::rgba(32);
     TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -285,6 +320,7 @@ pub fn run(instance: Instance, show_dashboard: bool) -> ! {
     let open = MenuItem::new("Open dashboard", true, None);
     let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled(), None);
     let quit = MenuItem::new("Quit (return lighting to hardware mode)", true, None);
+    let profiles = FanProfileItems::new();
     let mut tray: Option<TrayIcon> = None;
     let mut dashboard: Option<Dashboard> = None;
     let _instance = instance;
@@ -293,7 +329,7 @@ pub fn run(instance: Instance, show_dashboard: bool) -> ! {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::NewEvents(StartCause::Init) => {
-                tray = build_tray(&autostart, &open, &quit);
+                tray = build_tray(&autostart, &open, &profiles, &quit);
                 if show_dashboard {
                     dashboard = open_dashboard(target, &mut context);
                 }
@@ -316,8 +352,15 @@ pub fn run(instance: Instance, show_dashboard: bool) -> ! {
                         log::error!("Unable to change autostart: {err}");
                     }
                     autostart.set_checked(autostart_enabled());
+                } else if let Some(name) = profiles.preset_for(&e.id) {
+                    if let Err(err) = hub::manager::set_fan_preset(name) {
+                        log::warn!("Unable to switch fan profile: {err}");
+                    }
+                    profiles.sync();
                 }
             }
+            // Hovering the icon comes before any right click, so the menu opens up to date.
+            Event::UserEvent(UserEvent::FanProfile) | Event::UserEvent(UserEvent::Tray(TrayIconEvent::Enter { .. })) => profiles.sync(),
             Event::UserEvent(UserEvent::Tray(TrayIconEvent::DoubleClick { button: MouseButton::Left, .. })) => {
                 let _ = PROXY.get().map(|p| p.lock().unwrap().send_event(UserEvent::Show));
             }

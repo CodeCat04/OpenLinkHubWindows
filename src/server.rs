@@ -71,6 +71,8 @@ fn state() -> Value {
         "hubs": manager::views(),
         "sensors": sensors::snapshot(),
         "speedProfiles": temperatures::all(),
+        "fanPresets": temperatures::FAN_PRESETS,
+        "fanPreset": manager::active_fan_preset(),
         "rgbProfiles": rgb_profiles::all(),
         "rgbModes": RGB_MODES,
         "linkAdapters": crate::hub::adapters::choices(),
@@ -181,7 +183,13 @@ fn post(path: &str, body: Value) -> Result<(), String> {
     match path {
         "/api/hub/speed" => {
             let r: ChannelsRequest = parse(body)?;
-            hub(&r.serial)?.set_speed_profile(&r.channels, &r.profile)
+            hub(&r.serial)?.set_speed_profile(&r.channels, &r.profile)?;
+            app::fan_profile_changed();
+            Ok(())
+        }
+        "/api/fanPreset" => {
+            let r: NameRequest = parse(body)?;
+            manager::set_fan_preset(&r.name)
         }
         "/api/hub/rgb" => {
             let r: ChannelsRequest = parse(body)?;
@@ -273,6 +281,7 @@ mod tests {
         assert!(std::str::from_utf8(page.body()).unwrap().contains("<title>OpenLinkHub</title>"));
         assert_eq!(handle(post_req("/api/quit", "{}", false)).status(), 403);
         assert_eq!(handle(post_req("/api/hub/rgb", "{bad", true)).status(), 400);
+        assert_eq!(handle(post_req("/api/fanPreset", r#"{"name":"Turbo"}"#, true)).status(), 400);
         assert_eq!(handle(Request::get("http://olh.localhost/nope").body(Vec::new()).unwrap()).status(), 404);
     }
 }

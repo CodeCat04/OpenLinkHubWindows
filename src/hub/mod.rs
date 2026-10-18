@@ -150,6 +150,13 @@ pub struct LinkDevice {
     pub power_out: f64,
 }
 
+impl LinkDevice {
+    /// Fans follow the global fan profile switcher; pumps and the PSU keep their own curve.
+    pub fn follows_fan_profile(&self) -> bool {
+        self.has_speed && !self.contains_pump && !self.is_psu
+    }
+}
+
 struct HubState {
     devices: BTreeMap<u8, LinkDevice>,
     profile: HubProfile,

@@ -16,6 +16,8 @@ pub const SENSOR_CPU_GPU: u8 = 5;
 pub const SENSOR_PSU: u8 = 10;
 
 pub const CRITICAL_PROFILE: &str = "aioCriticalTemperature";
+/// Built-in curves offered by the fan profile switcher (dashboard header and tray menu).
+pub const FAN_PRESETS: [&str; 3] = ["Quiet", "Normal", "Performance"];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Point {

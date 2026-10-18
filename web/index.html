@@ -23,6 +23,14 @@ header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, va
 .bar { max-width: 1180px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; margin-right: auto; }
 .brand svg { width: 26px; height: 26px; }
+.presets { display: flex; align-items: center; gap: 8px; }
+.presets > span { color: var(--muted); font-size: 12.5px; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.seg button { background: none; border: 0; color: var(--muted); font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 6px; cursor: pointer; }
+.seg button:hover { color: var(--text); }
+.seg button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.seg button:disabled { cursor: default; opacity: .5; }
+.presets .custom { font-size: 12px; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .chip b { color: var(--text); font-weight: 600; }
@@ -101,6 +109,7 @@ pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-he
       <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="15" fill="#ffc400"/><circle cx="16" cy="16" r="12" fill="#18181c"/><g fill="#fafafa"><path d="M16 16 C 14 9, 18 6, 21 7 C 20 11, 18 14, 16 16Z"/><path d="M16 16 C 23 15, 26 19, 24.5 22 C 21 20.5, 18 18, 16 16Z"/><path d="M16 16 C 17 23, 13 26, 10 24.5 C 11.5 21, 14 18, 16 16Z"/><path d="M16 16 C 9 17, 6 13, 7.5 10 C 11 11.5, 14 14, 16 16Z"/></g><circle cx="16" cy="16" r="3" fill="#ffc400"/></svg>
       OpenLinkHub
     </div>
+    <div class="presets" id="presets" role="radiogroup" aria-labelledby="presets-label"></div>
     <div class="chips" id="chips"></div>
   </div>
   <nav role="tablist">
@@ -209,6 +218,7 @@ async function poll() {
 }
 
 function render() {
+  renderPresets();
   renderChips();
   renderBanners();
   const sig = JSON.stringify([state.hubs.map(h => [h.serial, h.devices.map(d => [d.channelId, d.name, d.ledChannels, d.adapter, !!d.lcd])]),
@@ -216,6 +226,32 @@ function render() {
   if (sig !== structure) { structure = sig; buildHubs(); renderCurveList(); renderRgbList(); renderSettings(); }
   updateHubs();
   updateCurveMarker();
+}
+
+// Global fan profile: puts every fan (not pumps) on Quiet, Normal or Performance.
+let presetBusy = false;
+function renderPresets() {
+  const box = $("#presets");
+  const hasFans = state.hubs.some(h => h.devices.some(d => d.hasSpeed && !d.containsPump && !d.isPsu));
+  if (!box.firstChild) {
+    box.append(el("span", { id: "presets-label" }, "Profile"),
+      el("div", { class: "seg" }, state.fanPresets.map(name => el("button", { role: "radio", "data-preset": name, onclick: () => setPreset(name) }, name))),
+      el("span", { class: "custom hint" }));
+  }
+  for (const b of box.querySelectorAll("button")) {
+    b.setAttribute("aria-checked", b.dataset.preset === state.fanPreset);
+    b.disabled = !hasFans || presetBusy;
+  }
+  box.querySelector(".custom").textContent = hasFans && !state.fanPreset ? "Custom" : "";
+  box.title = hasFans ? "Switches every fan. Pumps keep their own curve." : "No fans connected";
+}
+async function setPreset(name) {
+  if (presetBusy || name === state.fanPreset) return;
+  presetBusy = true; state.fanPreset = name; renderPresets();
+  if (await api("/api/fanPreset", { name })) toast("Fans: " + name);
+  presetBusy = false;
+  const r = await fetch("/api/state", { cache: "no-store" }).catch(() => null);
+  if (r) { state = await r.json(); render(); }
 }
 
 function renderChips() {
