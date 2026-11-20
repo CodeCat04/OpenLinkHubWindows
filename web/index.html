@@ -121,6 +121,31 @@ pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-he
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; box-shadow: 0 6px 24px rgba(0,0,0,.35); opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.show { opacity: 1; }
 .toast.err { border-color: var(--bad); }
+.ftrow { display: grid; grid-template-columns: 22px minmax(150px, 1fr) 76px 120px auto auto auto; gap: 8px 14px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.ftrow:first-child { border-top: 0; }
+.ftrow.current { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.ftrow .name { font-weight: 600; }
+.ftrow .name .kind { color: var(--muted); font-weight: 400; font-size: 11.5px; margin-left: 4px; }
+.ftrow .sub { color: var(--muted); font-size: 12px; }
+.ftrow .rpm { text-align: right; }
+.ftrow .meterwrap { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 12px; }
+.ftrow .meter { flex: 1; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
+.ftrow .meter i { display: block; height: 100%; background: var(--fan); transition: width .4s; }
+.ftrow.pump .meter i { background: var(--pump); }
+.ftrow button.btn { padding: 4px 10px; font-size: 13px; }
+.ftrow button.lit { background: #fff; color: #111; border-color: #fff; font-weight: 600; }
+.ftstatus { display: grid; gap: 10px; padding: 14px; }
+.ftstatus .now { font-size: 16px; font-weight: 600; }
+.ftstatus .now .phase { color: var(--accent); }
+.steps { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 12.5px; flex-wrap: wrap; }
+.steps span { border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; }
+.steps span.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.progress { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); transition: width .9s linear; }
+@media (max-width: 860px) {
+  .ftrow { grid-template-columns: 22px 1fr auto; }
+  .ftrow .meterwrap { grid-column: 2 / -1; }
+}
 [hidden] { display: none !important; }
 @media (max-width: 860px) {
   .dev { grid-template-columns: 1fr 1fr; }
@@ -148,6 +173,7 @@ pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-he
   </div>
   <nav role="tablist">
     <button role="tab" data-tab="devices" aria-selected="true">Devices</button>
+    <button role="tab" data-tab="fantest">Fan test</button>
     <button role="tab" data-tab="curves">Fan curves</button>
     <button role="tab" data-tab="lighting">Lighting</button>
     <button role="tab" data-tab="settings">Settings</button>
@@ -158,6 +184,14 @@ pre.logs { background: var(--panel-2); border-radius: 8px; padding: 10px; max-he
   <section id="tab-devices">
     <div id="banners"></div>
     <div id="hubs"></div>
+  </section>
+
+  <section id="tab-fantest" hidden>
+    <div class="card">
+      <div class="card-head"><h2>Find a noisy fan</h2><div class="controls" id="ft-controls"></div></div>
+      <div class="ftstatus" id="ft-status"></div>
+    </div>
+    <div id="ft-hubs"></div>
   </section>
 
   <section id="tab-curves" hidden>
@@ -260,6 +294,7 @@ function render() {
     Object.keys(state.speedProfiles), state.rgbModes, state.profile]);
   if (sig !== structure) { structure = sig; buildHubs(); renderCurveList(); renderRgbList(); renderSettings(); }
   updateHubs();
+  renderFanTest();
   updateCurveMarker();
 }
 
@@ -334,24 +369,35 @@ try { fansPinned = localStorage.getItem("fansPinned") === "1"; } catch {}
 // Rows are rebuilt only when the device list changes, then updated in place, so a click on a
 // light button can't land on a row that the 1-second refresh just replaced.
 let fanSig = "";
+// Fans and pumps (the PSU fan runs on its own).
+const canTest = d => (d.hasSpeed || d.containsPump) && !d.isPsu;
+// Short names for a hub's fans and pumps: the label, or e.g. "RX RGB 3" when there are several.
+function deviceNames(h) {
+  const devs = h.devices.filter(canTest);
+  const total = {}, seen = {}, out = {};
+  for (const d of devs) total[d.name] = (total[d.name] || 0) + 1;
+  for (const d of devs) {
+    seen[d.name] = (seen[d.name] || 0) + 1;
+    const base = d.name.replace(/^iCUE LINK /, "");
+    out[d.channelId] = d.label || (total[d.name] > 1 ? `${base} ${seen[d.name]}` : base);
+  }
+  return out;
+}
 const BULB = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path class="slash" d="M4 4l16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 function renderFans() {
   const isFan = d => d.hasSpeed && !d.containsPump && !d.isPsu;
   const fans = state.hubs.flatMap(h => h.devices.filter(isFan));
   $("#fanavg").textContent = fans.length ? Math.round(fans.reduce((a, d) => a + d.rpm, 0) / fans.length) + " rpm" : "No fans";
   $("#fanbtn").setAttribute("aria-label", "Fan speeds, average " + $("#fanavg").textContent);
-  const shown = h => h.devices.filter(d => isFan(d) || d.containsPump);
+  const shown = h => h.devices.filter(canTest);
   const sig = JSON.stringify(state.hubs.map(h => [h.serial, shown(h).map(d => [d.channelId, d.name, d.label, d.ledChannels])]));
   if (sig !== fanSig) {
     fanSig = sig;
     const groups = state.hubs.map(h => {
       const devs = shown(h);
-      const total = {}, seen = {};
-      for (const d of devs) total[d.name] = (total[d.name] || 0) + 1;
+      const names = deviceNames(h);
       const rows = devs.map(d => {
-        seen[d.name] = (seen[d.name] || 0) + 1;
-        const base = d.name.replace(/^iCUE LINK /, "");
-        const name = d.label || (total[d.name] > 1 ? `${base} ${seen[d.name]}` : base);
+        const name = names[d.channelId];
         const light = d.ledChannels > 0
           ? el("button", { class: "light", "data-k": "light", onclick: e => toggleLight(h.serial, d.channelId, e.currentTarget) })
           : el("span");
@@ -419,8 +465,18 @@ function renderBanners() {
         : "Run the OpenLinkHub installer again and tick “CPU temperature sensor” (see Settings), ",
       "or switch fans to the “Liquid Temperature” curve."));
   }
+  const fixed = state.hubs.flatMap(h => h.devices.filter(d => d.manualSpeed));
+  if (state.fanTest) {
+    out.push(el("div", { class: "banner" }, el("b", {}, "Fan test running. "), "Fans are being driven by the test on the Fan test tab; curves come back when it ends."));
+  } else if (fixed.length) {
+    out.push(el("div", { class: "banner" }, el("b", {}, `${fixed.length} fan${fixed.length === 1 ? " is" : "s are"} on a fixed speed `),
+      "(set on the Fan test tab), not on their curve. ",
+      el("button", { class: "btn", onclick: () => api("/api/manualSpeed/clear").then(ok => ok && toast("All fans back on Auto")) }, "Put all back on Auto")));
+  }
   if (state.hubs.some(h => h.critical)) out.push(el("div", { class: "banner bad" }, el("b", {}, "AIO coolant is critically hot. "), "All fans and the pump are at 100% until it cools below 52 °C."));
-  $("#banners").replaceChildren(...out);
+  // Only rebuild when the text changes, so a click on a banner button isn't lost to the refresh.
+  const key = out.map(e => e.textContent).join("\n");
+  if ($("#banners").dataset.key !== key) { $("#banners").dataset.key = key; $("#banners").replaceChildren(...out); }
 }
 
 // ---------------------------------------------------------------- devices
@@ -596,6 +652,151 @@ function updateHubs() {
       $(".swatch", row)?.classList.toggle("on", !!d.rgbOverride.enabled);
     }
   }
+}
+
+// ---------------------------------------------------------------- fan test
+// Every fan and pump with Auto / Quiet / Max, "Light up" (that device white, the rest dark), and an
+// automatic test that runs each ticked device Normal → Max → Quiet while everything else is quiet and dark.
+const FT_SETTLE = 10;
+const FT_PHASES = [["normal", "Normal"], ["max", "Max"], ["quiet", "Quiet"]];
+const FT_SPEEDS = [[null, "Auto", "Follow its fan curve (the current profile)"], ["quiet", "Quiet", "Lowest speed without stopping"], ["max", "Max", "100%"]];
+const ftKey = (serial, ch) => serial + "|" + ch;
+let ftSel = {}, ftSecs = 30, ftSig = "";
+try { ftSel = JSON.parse(localStorage.getItem("fanTestSel") || "{}") || {}; } catch {}
+try { ftSecs = Math.min(300, Math.max(5, +localStorage.getItem("fanTestSecs") || 30)); } catch {}
+const ftSelected = (serial, d) => ftSel[ftKey(serial, d.channelId)] ?? !d.containsPump; // pumps opt-in
+function ftSaveSel() { try { localStorage.setItem("fanTestSel", JSON.stringify(ftSel)); } catch {} }
+function ftQueue() {
+  return state.hubs.flatMap(h => h.devices.filter(d => canTest(d) && ftSelected(h.serial, d)).map(d => ({ serial: h.serial, channel: d.channelId })));
+}
+function ftName(t) {
+  const h = state.hubs.find(h => h.serial === t.serial);
+  const name = h ? deviceNames(h)[t.channel] : null;
+  return (name || `Channel ${t.channel}`) + (state.hubs.length > 1 ? ` · hub ${shortSerial(t.serial)}` : "");
+}
+const ftMinutes = (n, secs) => Math.max(1, Math.round((Math.min(FT_SETTLE, secs) + n * 3 * secs) / 60));
+async function ftStart(devices) {
+  if (await api("/api/fanTest/start", { devices, phaseSecs: ftSecs })) toast("Fan test started");
+}
+
+function buildFanTest() {
+  const secs = el("input", { type: "number", min: 5, max: 300, step: 5, value: ftSecs, style: "width:70px", "aria-label": "Seconds per step",
+    onchange: e => { ftSecs = Math.min(300, Math.max(5, Math.round(+e.target.value || 30))); e.target.value = ftSecs; try { localStorage.setItem("fanTestSecs", ftSecs); } catch {} } });
+  const selectAll = on => { for (const h of state.hubs) for (const d of h.devices.filter(canTest)) ftSel[ftKey(h.serial, d.channelId)] = on && !d.containsPump; ftSaveSel(); renderFanTest(); };
+  $("#ft-controls").replaceChildren(
+    el("label", { class: "inline" }, "Each step", secs, "s"),
+    el("button", { class: "btn", "data-k": "idle", onclick: () => selectAll(true) }, "Tick all fans"),
+    el("button", { class: "btn", "data-k": "idle", onclick: () => selectAll(false) }, "Untick all"),
+    el("button", { class: "btn primary", "data-k": "start", onclick: () => ftStart(ftQueue()) }),
+    el("button", { class: "btn", "data-k": "skip", onclick: () => api("/api/fanTest/skip") }, "Next fan"),
+    el("button", { class: "btn danger", "data-k": "stop", onclick: () => api("/api/fanTest/stop").then(ok => ok && toast("Fan test stopped")) }, "Stop"));
+
+  const cards = state.hubs.map(h => {
+    const names = deviceNames(h);
+    const rows = h.devices.filter(canTest).map(d => {
+      const key = ftKey(h.serial, d.channelId);
+      const pick = el("input", { type: "checkbox", "data-k": "pick", "aria-label": "Include in the automatic test",
+        onchange: e => { ftSel[key] = e.target.checked; ftSaveSel(); renderFanTest(); } });
+      pick.checked = ftSelected(h.serial, d);
+      const seg = el("div", { class: "seg", role: "radiogroup", "aria-label": "Speed" }, FT_SPEEDS.map(([v, label, title]) =>
+        el("button", { role: "radio", "data-speed": v ?? "", title, onclick: async () => {
+          if (await api("/api/hub/manualSpeed", { serial: h.serial, channel: d.channelId, speed: v })) toast(`${names[d.channelId]}: ${label}`);
+        } }, label)));
+      const lit = d.ledChannels > 0
+        ? el("button", { class: "btn", "data-k": "lit", onclick: e => api("/api/hub/spotlight", { serial: h.serial, channel: d.channelId, on: !e.currentTarget.classList.contains("lit") }) }, "Light up")
+        : el("span", { class: "hint" }, "No lights");
+      return el("div", { class: "ftrow" + (d.containsPump ? " pump" : ""), "data-serial": h.serial, "data-ch": d.channelId },
+        pick,
+        el("div", {}, el("div", { class: "name" }, names[d.channelId], d.containsPump ? el("span", { class: "kind" }, "pump") : null),
+          el("div", { class: "sub" }, d.label ? d.name : `Channel ${d.channelId}`)),
+        el("span", { class: "rpm", "data-k": "rpm" }),
+        el("span", { class: "meterwrap" }, el("span", { class: "meter" }, el("i", { "data-k": "meter" })), el("span", { "data-k": "pct" })),
+        seg, lit,
+        el("button", { class: "btn", "data-k": "one", title: "Run the automatic test on just this one", onclick: () => ftStart([{ serial: h.serial, channel: d.channelId }]) }, "Test"));
+    });
+    if (!rows.length) return null;
+    return el("div", { class: "card" },
+      el("div", { class: "card-head" }, el("h2", {}, h.product, el("span", { class: "sub" }, `${shortSerial(h.serial)} · ${rows.length} fan${rows.length === 1 ? "" : "s"} and pumps`))),
+      el("div", {}, rows));
+  }).filter(Boolean);
+  $("#ft-hubs").replaceChildren(...(cards.length ? cards : [el("div", { class: "card empty" }, "No fans found.")]));
+}
+
+function renderFanTest() {
+  const sig = JSON.stringify(state.hubs.map(h => [h.serial, h.devices.filter(canTest).map(d => [d.channelId, d.name, d.label, d.ledChannels])]));
+  if (sig !== ftSig) { ftSig = sig; buildFanTest(); }
+  const t = state.fanTest;
+  const running = !!t;
+  const lit = new Set((state.spotlight || []).map(s => ftKey(s.serial, s.channel)));
+  const queue = ftQueue();
+
+  const start = $('[data-k="start"]', $("#ft-controls"));
+  start.hidden = running;
+  start.disabled = !queue.length;
+  start.textContent = queue.length ? `Test ${queue.length} ticked · about ${ftMinutes(queue.length, ftSecs)} min` : "Tick fans to test";
+  for (const b of document.querySelectorAll('#ft-controls [data-k="idle"]')) b.hidden = running;
+  $('[data-k="skip"]', $("#ft-controls")).hidden = !running || !t.current;
+  $('[data-k="stop"]', $("#ft-controls")).hidden = !running;
+  $("#ft-controls input").disabled = running;
+
+  for (const h of state.hubs) for (const d of h.devices.filter(canTest)) {
+    const row = $(`.ftrow[data-serial="${CSS.escape(h.serial)}"][data-ch="${d.channelId}"]`, $("#ft-hubs"));
+    if (!row) continue;
+    const key = ftKey(h.serial, d.channelId);
+    row.classList.toggle("current", !!t?.current && ftKey(t.current.serial, t.current.channel) === key);
+    $('[data-k="rpm"]', row).textContent = d.rpm > 0 ? d.rpm + " rpm" : "stopped";
+    $('[data-k="meter"]', row).style.width = d.duty + "%";
+    $('[data-k="pct"]', row).textContent = d.duty + "%";
+    const pick = $('[data-k="pick"]', row);
+    pick.disabled = running;
+    pick.checked = ftSelected(h.serial, d);
+    for (const b of row.querySelectorAll(".seg button")) {
+      b.setAttribute("aria-checked", b.dataset.speed === (d.manualSpeed || ""));
+      b.disabled = running;
+    }
+    const lb = $('[data-k="lit"]', row);
+    if (lb) {
+      const on = lit.has(key);
+      lb.classList.toggle("lit", on);
+      lb.setAttribute("aria-pressed", on);
+      lb.title = on ? "Lit white, everything else dark. Click to put the lighting back." : "Light only this one up (white) and turn every other light off";
+      lb.disabled = running;
+    }
+    $('[data-k="one"]', row).hidden = running;
+  }
+
+  const box = $("#ft-status");
+  if (!running) {
+    const key = "idle";
+    if (box.dataset.key !== key) {
+      box.dataset.key = key;
+      box.replaceChildren(
+        el("div", { class: "hint" }, "Tick the fans you want to check and press Test. Every fan and pump drops to its quietest speed and every light goes dark. ",
+          `Then each ticked fan in turn lights up white and runs at Normal, then Max, then back to Quiet, for the step length each, so you can hear which one makes the noise. `,
+          "Already know some are fine? Untick them, or use a row's Test button to check just that one."),
+        el("div", { class: "hint" }, "Auto / Quiet / Max set a single fan by hand and Light up finds it in the case. None of this is saved: Auto is restored when OpenLinkHub restarts, and the test puts everything back when it ends. ",
+          "Avoid gaming during the test; if the AIO coolant gets too hot, the cooling protection takes over and the test stops."));
+    }
+    return;
+  }
+  const phaseIdx = FT_PHASES.findIndex(([p]) => p === t.phase);
+  const done = t.current ? ((t.index - 1) * 3 + phaseIdx + 1 - t.remaining / t.phaseSecs) / (t.queue.length * 3) : 0;
+  if (box.dataset.key !== "run") {
+    box.dataset.key = "run";
+    box.replaceChildren(el("div", { class: "now", "data-k": "now" }), el("div", { class: "steps", "data-k": "steps" }),
+      el("div", { class: "progress" }, el("i", { "data-k": "bar" })), el("div", { class: "hint", "data-k": "left" }));
+  }
+  const now = $('[data-k="now"]', box);
+  if (t.current) {
+    now.replaceChildren(`${t.index} of ${t.queue.length}: ${ftName(t.current)} `, el("span", { class: "phase" }, `· ${FT_PHASES[phaseIdx][1]} · ${t.remaining} s`));
+  } else {
+    now.replaceChildren("Slowing every fan down ", el("span", { class: "phase" }, `· ${t.remaining} s`));
+  }
+  $('[data-k="steps"]', box).replaceChildren(...FT_PHASES.map(([p, label], i) => [i ? "→" : null, el("span", { class: p === t.phase ? "on" : "" }, label)]).flat().filter(Boolean),
+    el("span", { style: "border:0" }, "The fan being tested is lit white."));
+  $('[data-k="bar"]', box).style.width = Math.max(0, Math.min(100, done * 100)) + "%";
+  const next = t.queue[t.index];
+  $('[data-k="left"]', box).textContent = next ? `Next: ${ftName(next)}` : t.current ? "Last one" : "";
 }
 
 // ---------------------------------------------------------------- fan curves

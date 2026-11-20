@@ -9,6 +9,7 @@
 
 mod app;
 mod config;
+mod fantest;
 mod hub;
 mod icon;
 mod lcd;

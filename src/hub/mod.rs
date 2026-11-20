@@ -70,6 +70,18 @@ pub struct HubProfile {
     pub rgb_off: bool,
 }
 
+/// A speed set by hand (Fan test tab) or by the fan test, replacing the device's curve.
+/// Never saved: everything is back on its curve after a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ManualSpeed {
+    /// The lowest speed allowed without stopping (the same floors as the curves).
+    Quiet,
+    /// What the Normal curve would run this device at right now.
+    Normal,
+    Max,
+}
+
 impl Default for HubProfile {
     fn default() -> Self {
         HubProfile {
@@ -185,6 +197,8 @@ pub struct LinkDevice {
     /// LEDs temporarily turned off from the fan speeds list, to find the fan in the case.
     /// Not saved: lighting comes back on restart.
     pub light_off: bool,
+    /// Speed override from the Fan test tab or the fan test. Not saved.
+    pub manual_speed: Option<ManualSpeed>,
     /// Last duty sent to the device, %.
     pub duty: u8,
     pub volts: Vec<f64>,
@@ -197,6 +211,11 @@ impl LinkDevice {
     /// Fans follow the global fan profile switcher; pumps and the PSU keep their own curve.
     pub fn follows_fan_profile(&self) -> bool {
         self.has_speed && !self.contains_pump && !self.is_psu
+    }
+
+    /// Fans and pumps; the PSU fan runs on its own.
+    pub fn speed_controllable(&self) -> bool {
+        (self.has_speed || self.contains_pump) && !self.is_psu
     }
 }
 
@@ -236,6 +255,8 @@ pub struct Hub {
     failed: AtomicBool,
     io_failures: AtomicU64,
     rgb_generation: AtomicU64,
+    /// Set when a manual speed changes so the speed loop applies it without waiting.
+    speed_wake: AtomicBool,
     threads: Mutex<Vec<JoinHandle<()>>>,
     /// Pump channel → (panel, product name).
     lcds: Mutex<BTreeMap<u8, (Arc<LcdController>, &'static str)>>,
@@ -287,6 +308,7 @@ impl Hub {
             failed: AtomicBool::new(false),
             io_failures: AtomicU64::new(0),
             rgb_generation: AtomicU64::new(1),
+            speed_wake: AtomicBool::new(false),
             threads: Mutex::new(Vec::new()),
             lcds: Mutex::new(BTreeMap::new()),
         });
@@ -300,9 +322,9 @@ impl Hub {
         threads.push(hub.spawn("poll", Hub::poll_loop));
         if config::get().manual {
             log::info!("[{tag}] Manual mode: fan curves are not evaluated");
-        } else {
-            threads.push(hub.spawn("speed", Hub::speed_loop));
         }
+        // Runs in manual mode too, so speeds set on the Fan test tab still apply.
+        threads.push(hub.spawn("speed", Hub::speed_loop));
         threads.push(hub.spawn("rgb", Hub::rgb_loop));
         *hub.threads.lock().unwrap() = threads;
 
@@ -494,7 +516,10 @@ impl Hub {
                     last = wanted;
                 }
             }
-            self.sleep(SPEED_INTERVAL);
+            let until = Instant::now() + SPEED_INTERVAL;
+            while self.running() && Instant::now() < until && !self.speed_wake.swap(false, Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(25).min(until.saturating_duration_since(Instant::now())));
+            }
         }
     }
 
@@ -502,9 +527,28 @@ impl Hub {
         let s = self.state.read().unwrap();
         let liquid = liquid_temperature(&s.devices);
         let psu = s.devices.values().find(|d| d.is_psu).map_or(0.0, |d| d.temperature);
+        let curves_off = config::get().manual;
         let mut out = BTreeMap::new();
         for d in s.devices.values() {
-            let name = if s.critical { temperatures::CRITICAL_PROFILE } else { d.speed_profile.as_str() };
+            // Coolant protection always wins over curves and manual speeds.
+            let manual = if s.critical { None } else { d.manual_speed.filter(|_| d.speed_controllable()) };
+            let name = match manual {
+                Some(ManualSpeed::Quiet) => {
+                    out.insert(d.channel_id, quiet_duty(d));
+                    continue;
+                }
+                Some(ManualSpeed::Max) => {
+                    out.insert(d.channel_id, 100);
+                    continue;
+                }
+                Some(ManualSpeed::Normal) => "Normal",
+                None if s.critical => temperatures::CRITICAL_PROFILE,
+                None if curves_off => {
+                    out.insert(d.channel_id, DEFAULT_SPEED);
+                    continue;
+                }
+                None => d.speed_profile.as_str(),
+            };
             let profile = temperatures::get(name).or_else(|| temperatures::get("Normal")).expect("Normal profile");
             let temp = sensor_temperature(&profile, &self.serial, &s.devices, liquid, psu);
             out.insert(d.channel_id, duty_for(d, &profile, temp));
@@ -586,6 +630,16 @@ impl Hub {
         let total: usize = s.devices.values().map(|d| d.led_channels as usize).sum();
         if total == 0 {
             return None;
+        }
+        // Fan test / "Light up": chosen devices white, everything else dark, even with lights off.
+        if let Some(lit) = crate::fantest::spotlight(&self.serial) {
+            let level = (255.0 * if s.global_brightness != 0.0 { s.global_brightness } else { 1.0 }).round() as u8;
+            let mut frame = Vec::with_capacity(total * 3);
+            for d in s.devices.values().filter(|d| d.led_channels > 0) {
+                let v = if lit.contains(&d.channel_id) { level } else { 0 };
+                frame.resize(frame.len() + d.led_channels as usize * 3, v);
+            }
+            return Some(frame);
         }
         if s.profile.rgb_off {
             return Some(vec![0u8; total * 3]);
@@ -875,6 +929,45 @@ impl Hub {
         let d = s.devices.get_mut(&channel).filter(|d| d.led_channels > 0).ok_or("That device has no lights")?;
         d.light_off = off;
         Ok(())
+    }
+
+    /// Override one fan's or pump's speed (`None` = back to its curve). Not saved.
+    pub fn set_manual_speed(&self, channel: u8, speed: Option<ManualSpeed>) -> Result<(), String> {
+        {
+            let mut s = self.state.write().unwrap();
+            let d = s.devices.get_mut(&channel).filter(|d| d.speed_controllable()).ok_or("That device's speed can't be changed")?;
+            d.manual_speed = speed;
+        }
+        self.speed_wake.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Set every fan's and pump's manual speed at once; applied right away if anything changed.
+    pub fn apply_manual_speeds(&self, f: impl Fn(&LinkDevice) -> Option<ManualSpeed>) {
+        let mut changed = false;
+        {
+            let mut s = self.state.write().unwrap();
+            for d in s.devices.values_mut().filter(|d| d.speed_controllable()) {
+                let want = f(d);
+                if d.manual_speed != want {
+                    d.manual_speed = want;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.speed_wake.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether AIO coolant protection is forcing full cooling right now.
+    pub fn is_critical(&self) -> bool {
+        self.state.read().unwrap().critical
+    }
+
+    /// (channel, manual speed) of every fan and pump.
+    pub fn manual_speeds(&self) -> Vec<(u8, Option<ManualSpeed>)> {
+        self.state.read().unwrap().devices.values().filter(|d| d.speed_controllable()).map(|d| (d.channel_id, d.manual_speed)).collect()
     }
 
     pub fn set_label(&self, channel: u8, label: &str) -> Result<(), String> {
@@ -1265,6 +1358,16 @@ fn sensor_temperature(p: &TemperatureProfile, serial: &str, devices: &BTreeMap<u
     if temp == 0.0 { 50.0 } else { temp }
 }
 
+/// The lowest duty a device may run at without stopping: the floors `duty_for` applies.
+fn quiet_duty(d: &LinkDevice) -> u8 {
+    match (d.contains_pump, d.aio, d.titan_aio) {
+        (true, true, true) => 31,
+        (true, true, false) => 50,
+        (true, false, _) => 30,
+        (false, ..) => 20,
+    }
+}
+
 /// Map a temperature to this device's duty with upstream's safety floors.
 fn duty_for(d: &LinkDevice, p: &TemperatureProfile, temp: f32) -> u8 {
     let mut pump = temperatures::interpolate(p.pump_points(), temp).round() as i32;
@@ -1336,6 +1439,24 @@ mod tests {
         assert_eq!(duty_for(&fan(), &silent, 40.0), 20, "fans never stop without zero-RPM");
         silent.zero_rpm = true;
         assert_eq!(duty_for(&fan(), &silent, 40.0), 0);
+    }
+
+    #[test]
+    fn quiet_duty_matches_curve_floors() {
+        let flat = |y| {
+            let mut p = temperatures::get("Normal").unwrap();
+            p.points.insert(0, vec![temperatures::Point { x: 0.0, y }]);
+            p.points.insert(1, vec![temperatures::Point { x: 0.0, y }]);
+            p
+        };
+        let aio = LinkDevice { aio: true, contains_pump: true, ..LinkDevice::default() };
+        let titan = LinkDevice { titan_aio: true, ..aio.clone() };
+        let pump = LinkDevice { contains_pump: true, ..LinkDevice::default() };
+        // Below 50 % an AIO pump jumps to 70 %, so 50 is the lowest it ever runs.
+        assert_eq!(quiet_duty(&aio), duty_for(&aio, &flat(50.0), 40.0));
+        assert_eq!(quiet_duty(&titan), duty_for(&titan, &flat(0.0), 40.0));
+        assert_eq!(quiet_duty(&pump), duty_for(&pump, &flat(0.0), 40.0));
+        assert_eq!(quiet_duty(&fan()), duty_for(&fan(), &flat(0.0), 40.0));
     }
 
     #[test]

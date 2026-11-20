@@ -5,7 +5,8 @@
 use crate::hub::{manager, RgbOverride};
 use crate::rgb::{Profile, RGB_MODES};
 use crate::temperatures::{self, TemperatureProfile};
-use crate::{app, config, logging, profiles, rgb_profiles, sensors};
+use crate::hub::ManualSpeed;
+use crate::{app, config, fantest, logging, profiles, rgb_profiles, sensors};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::borrow::Cow;
@@ -78,6 +79,8 @@ fn state() -> Value {
         "rgbProfiles": rgb_profiles::all(),
         "rgbModes": RGB_MODES,
         "linkAdapters": crate::hub::adapters::choices(),
+        "fanTest": fantest::status(),
+        "spotlight": fantest::spotlight_view(),
         "lcd": {
             "modes": crate::lcd::modes(true).into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
             "rotations": crate::lcd::rotations().into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
@@ -159,6 +162,28 @@ struct LightOffRequest {
 }
 
 #[derive(Deserialize)]
+struct ManualSpeedRequest {
+    serial: String,
+    channel: u8,
+    /// `null` puts the device back on its curve.
+    speed: Option<ManualSpeed>,
+}
+
+#[derive(Deserialize)]
+struct SpotlightRequest {
+    serial: String,
+    channel: u8,
+    on: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FanTestRequest {
+    devices: Vec<fantest::Target>,
+    phase_secs: u32,
+}
+
+#[derive(Deserialize)]
 struct RgbOffRequest {
     serial: String,
     off: bool,
@@ -232,6 +257,31 @@ fn post(path: &str, body: Value) -> Result<(), String> {
         "/api/hub/lightOff" => {
             let r: LightOffRequest = parse(body)?;
             hub(&r.serial)?.set_light_off(r.channel, r.off)
+        }
+        "/api/hub/manualSpeed" => {
+            let r: ManualSpeedRequest = parse(body)?;
+            if fantest::running() {
+                return Err("The fan test is running; stop it first".into());
+            }
+            hub(&r.serial)?.set_manual_speed(r.channel, r.speed)
+        }
+        "/api/manualSpeed/clear" => fantest::clear_manual_speeds(),
+        "/api/hub/spotlight" => {
+            let r: SpotlightRequest = parse(body)?;
+            hub(&r.serial)?;
+            fantest::toggle_spotlight(&r.serial, r.channel, r.on)
+        }
+        "/api/fanTest/start" => {
+            let r: FanTestRequest = parse(body)?;
+            fantest::start(r.devices, r.phase_secs)
+        }
+        "/api/fanTest/stop" => {
+            fantest::stop();
+            Ok(())
+        }
+        "/api/fanTest/skip" => {
+            fantest::skip();
+            Ok(())
         }
         "/api/hub/rgbOff" => {
             let r: RgbOffRequest = parse(body)?;

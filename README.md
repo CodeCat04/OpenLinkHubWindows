@@ -71,11 +71,12 @@ The installer:
 - **Fan speeds:** hover the fan button at the top right to see every fan's and pump's speed. Click it to keep it open; click again (or press Esc) to close it. The bulb next to each fan turns just that fan's lights off so you can spot it in the case; click again to turn them back on (they also come back when OpenLinkHub restarts).
 - **Quit:** right-click the tray icon → *Quit*. The hub returns to its built-in (hardware) lighting and fan behaviour.
 
-The dashboard has four tabs:
+The dashboard has five tabs:
 
 | Tab | What you can do |
 |---|---|
 | **Devices** | Live RPM, temperatures and duty for every device on each hub. Pick a fan curve and a lighting effect per device or for all at once, set brightness, turn lights off, give devices labels, set custom colors per device, choose what's connected to a LINK Adapter, and set up pump screens (**LCD** button). |
+| **Fan test** | Track down a noisy fan. Every fan and pump is listed with **Auto** (follow its curve), **Quiet** (lowest speed without stopping) and **Max**, plus **Light up**, which lights just that fan white and turns every other light off. The automatic test drops everything to Quiet and dark, then lights each ticked fan in turn and runs it at Normal, Max and Quiet (30 seconds each by default) so you can hear which one it is. Untick fans you already know are fine, or use a row's **Test** button for just that one. Nothing here is saved: the test puts everything back when it ends, and Auto returns on restart. |
 | **Fan curves** | Built-in curves (Quiet, Normal, Performance, Liquid Temperature, PSU), which you can edit and reset, plus your own. Drag points on the graph; a marker shows the live temperature. Curves can follow CPU, GPU, AIO coolant, a temperature probe, or a PSU. |
 | **Lighting** | 27 effects (Static, Rainbow, Spiral Rainbow, Color Pulse, Color Shift, Wave, Rain, Nebula, Marquee, temperature-reactive, and more). Adjust speed and colors. |
 | **Settings** | Start with Windows, sensor status, the log viewer, and Quit. |
