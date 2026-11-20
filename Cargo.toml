@@ -24,7 +24,7 @@ log = "0.4"
 rand = "0.8"
 tray-icon = "0.26.1"
 winreg = "0.56.0"
-windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Memory", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemInformation", "Win32_System_LibraryLoader"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Memory", "Win32_Security", "Win32_Security_Authorization", "Win32_System_SystemInformation", "Win32_System_LibraryLoader", "Win32_System_WindowsProgramming"] }
 windows-service = "0.8.1"
 wry = "0.57.0"
 tao = "0.37.1"

@@ -77,9 +77,9 @@ impl Transport {
         let n = payload.len().min(w.len() - cmd_end);
         w[cmd_end..cmd_end + n].copy_from_slice(&payload[..n]);
 
-        self.dev.write(&w).map_err(io::Error::other)?;
+        self.dev.write(&w).map_err(hid_error)?;
         let mut r = [0u8; BUFFER_SIZE];
-        let got = self.dev.read_timeout(&mut r, READ_TIMEOUT_MS).map_err(io::Error::other)?;
+        let got = self.dev.read_timeout(&mut r, READ_TIMEOUT_MS).map_err(hid_error)?;
         if got == 0 {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "no reply from hub"));
         }
@@ -94,7 +94,7 @@ impl Transport {
         let mut w = [0u8; BUFFER_SIZE + 1];
         w[2] = 0x01;
         w[HEADER_SIZE..HEADER_SIZE + command.len()].copy_from_slice(command);
-        self.dev.write(&w).map(|_| ()).map_err(io::Error::other)
+        self.dev.write(&w).map(|_| ()).map_err(hid_error)
     }
 
     /// Read a data endpoint: close, open, read (twice if the reply spans two packets), close.
@@ -149,6 +149,25 @@ impl Transport {
     }
 }
 
+/// Keep the kind of hidapi errors so callers can tell a dead handle from a bad reply.
+/// hidapi's Windows backend reports a write that didn't finish within 1 s as `WaitTimedOut`.
+fn hid_error(e: hidapi::HidError) -> io::Error {
+    match e {
+        hidapi::HidError::HidApiError { message } if message.ends_with("WaitTimedOut") => {
+            io::Error::new(io::ErrorKind::TimedOut, "write to hub timed out")
+        }
+        hidapi::HidError::IoError { error } => error,
+        e => io::Error::other(e),
+    }
+}
+
+/// Whether the handle has to be reopened after this error. On a timeout hidapi leaves its
+/// overlapped request pending: a stuck write blocks every later write, and a late reply is
+/// returned for the *next* command, so every reply after it would belong to the one before.
+pub fn handle_unusable(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::BrokenPipe | io::ErrorKind::NotConnected)
+}
+
 /// `[len+2 (u16 LE), 0x00, 0x00, data_type..., data...]`
 fn framed(data_type: &[u8], data: &[u8]) -> Vec<u8> {
     let mut buffer = vec![0u8; HEADER_WRITE_SIZE + data_type.len() + data.len()];
@@ -167,6 +186,16 @@ mod tests {
         // Go: buffer[0:2] = len(data)+2 (LE), bufferType at [4:], data after it.
         let f = framed(DATA_TYPE_SET_SPEED, &[1, 2, 0, 70, 0]);
         assert_eq!(f, vec![7, 0, 0, 0, 0x07, 0x00, 1, 2, 0, 70, 0]);
+    }
+
+    #[test]
+    fn timeouts_mean_the_handle_must_be_reopened() {
+        let stuck = hid_error(hidapi::HidError::HidApiError { message: "WinError: WaitTimedOut".into() });
+        assert!(handle_unusable(&stuck));
+        let no_reply = io::Error::new(io::ErrorKind::TimedOut, "no reply from hub");
+        assert!(handle_unusable(&no_reply));
+        let other = hid_error(hidapi::HidError::HidApiError { message: "WinError: InvalidPreparsedData".into() });
+        assert!(!handle_unusable(&other));
     }
 
     #[test]

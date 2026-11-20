@@ -42,14 +42,51 @@ pub fn start() {
     thread::Builder::new()
         .name("hotplug".into())
         .spawn(|| {
+            let mut slept = slept_ms();
             while !STOPPING.load(Ordering::Relaxed) {
                 thread::sleep(SCAN_INTERVAL);
-                if !STOPPING.load(Ordering::Relaxed) {
-                    scan();
+                if STOPPING.load(Ordering::Relaxed) {
+                    break;
                 }
+                let now = slept_ms();
+                if now.saturating_sub(slept) >= RESUME_THRESHOLD_MS {
+                    log::info!("Woke from sleep after {} min; reconnecting hubs", (now - slept) / 60_000);
+                    reconnect_all();
+                    thread::sleep(RESUME_SETTLE);
+                }
+                slept = now;
+                scan();
             }
         })
         .expect("spawn hotplug thread");
+}
+
+/// Sleep/hibernation shorter than this is ignored (the two clocks drift by a few ms).
+const RESUME_THRESHOLD_MS: u64 = 5_000;
+/// Give USB a moment to come back before reopening hubs.
+const RESUME_SETTLE: Duration = Duration::from_secs(2);
+
+/// Total time the PC has spent asleep or hibernating since boot: the tick count includes
+/// sleep, the unbiased interrupt time doesn't. Unaffected by clock changes.
+fn slept_ms() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+    use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
+    let mut awake_100ns = 0u64;
+    // SAFETY: both only read system counters; the pointer is to a local.
+    let total_ms = unsafe {
+        QueryUnbiasedInterruptTime(&mut awake_100ns);
+        GetTickCount64()
+    };
+    total_ms.saturating_sub(awake_100ns / 10_000)
+}
+
+/// After sleep the hubs are back in hardware mode and their handles can't be trusted, even
+/// when I/O still seems to work. Drop every hub; the next scan opens and sets them up again.
+fn reconnect_all() {
+    let all: Vec<Arc<Hub>> = std::mem::take(&mut *hubs().write().unwrap()).into_values().collect();
+    for hub in all {
+        hub.stop();
+    }
 }
 
 /// One enumeration pass: drop failed or vanished hubs, start new ones.
@@ -169,5 +206,17 @@ pub fn stop_all() {
     let all: Vec<Arc<Hub>> = std::mem::take(&mut *hubs().write().unwrap()).into_values().collect();
     for hub in all {
         hub.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sleep_clock_is_steady_while_awake() {
+        let a = super::slept_ms();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let b = super::slept_ms();
+        println!("asleep since boot: {} s", b / 1000);
+        assert!(b.abs_diff(a) < super::RESUME_THRESHOLD_MS, "{a} -> {b}");
     }
 }

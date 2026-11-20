@@ -376,6 +376,11 @@ impl Hub {
                 self.io_failures.store(0, Ordering::Relaxed);
                 Some(v)
             }
+            Err(e) if handle_unusable(&e) => {
+                log::warn!("[{}] {what} failed: {e}. Reconnecting to the hub", self.tag);
+                self.failed.store(true, Ordering::Relaxed);
+                None
+            }
             Err(e) => {
                 let n = self.io_failures.fetch_add(1, Ordering::Relaxed) + 1;
                 log::warn!("[{}] {what} failed ({n}/{MAX_IO_FAILURES}): {e}", self.tag);
